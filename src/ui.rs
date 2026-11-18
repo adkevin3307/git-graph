@@ -229,12 +229,9 @@ fn ref_style(name: &str, kind: RefKind, lane_color: usize) -> (String, Style) {
     match kind {
         RefKind::Head => (
             format!("[HEAD → {name}]"),
-            Style::new().fg(color(lane_color)).bold(),
+            Style::new().fg(color(lane_color)),
         ),
-        RefKind::Local => (
-            format!("[{name}]"),
-            Style::new().fg(color(lane_color)).bold(),
-        ),
+        RefKind::Local => (format!("[{name}]"), Style::new().fg(color(lane_color))),
         RefKind::Remote => (
             format!("[{name}]"),
             Style::new()
