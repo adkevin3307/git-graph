@@ -51,6 +51,9 @@ pub struct App {
     /// Top of the graph list area on screen (for mouse clicks).
     pub list_top: u16,
     pub list_right: u16,
+    /// Cycle state for `m`: (merge commit, parent index last visited,
+    /// commit selected after that jump).
+    merge_cycle: Option<(Oid, usize, Oid)>,
 }
 
 impl App {
@@ -74,6 +77,7 @@ impl App {
             page: 20,
             list_top: 0,
             list_right: 0,
+            merge_cycle: None,
         };
         if let Some(i) = app.snap.head.and_then(|h| app.snap.index.get(&h).copied()) {
             app.select(i);
@@ -344,7 +348,7 @@ impl App {
                 }
             }
             KeyCode::Char('p') => self.goto_parent(0),
-            KeyCode::Char('m') => self.goto_parent(1),
+            KeyCode::Char('m') => self.cycle_merged_parent(),
             KeyCode::Char('c') => self.child(),
             KeyCode::Char('o') => self.ask_checkout(),
             KeyCode::Char('y') => self.yank(),
@@ -414,6 +418,58 @@ impl App {
                 })
             }
             Err(e) => self.status = format!("Diff failed: {e:#}"),
+        }
+    }
+
+    /// Jump to the merge's second parent; pressing `m` again right after
+    /// moves on to the next merged parent, wrapping back to the first.
+    fn cycle_merged_parent(&mut self) {
+        let Some(current) = self.snap.commits.get(self.selected).map(|c| c.id) else {
+            return;
+        };
+        let (merge, idx) = match self.merge_cycle {
+            Some((merge, last, landed)) if landed == current => {
+                let n = self
+                    .snap
+                    .index
+                    .get(&merge)
+                    .map_or(0, |&i| self.snap.commits[i].parents.len());
+                (merge, if last + 1 < n { last + 1 } else { 1 })
+            }
+            _ => {
+                if self.snap.commits[self.selected].parents.len() < 2 {
+                    self.merge_cycle = None;
+                    self.status = "Not a merge commit".into();
+                    return;
+                }
+                (current, 1)
+            }
+        };
+        // The merge may have vanished after a reload.
+        let Some(parents) = self
+            .snap
+            .index
+            .get(&merge)
+            .map(|&i| &self.snap.commits[i].parents)
+        else {
+            self.merge_cycle = None;
+            return;
+        };
+        let Some(&target) = parents.get(idx) else {
+            self.merge_cycle = None;
+            return;
+        };
+        let total = parents.len() - 1;
+        let jumped = self.select_id(target);
+        let landed = self.snap.commits[self.selected].id;
+        self.merge_cycle = Some((merge, idx, landed));
+        if jumped {
+            let short = &merge.to_string()[..7];
+            self.status = if total > 1 {
+                format!("Merged parent {idx}/{total} of {short} (m: next)")
+            } else {
+                format!("Merged parent of {short}")
+            };
         }
     }
 
