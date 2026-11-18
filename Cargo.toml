@@ -1,0 +1,9 @@
+[package]
+name = "git-graph"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.104"
+clap = { version = "4.6.8", features = ["derive"] }
+git2 = "0.21.0"
