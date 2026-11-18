@@ -131,28 +131,23 @@ fn draw_graph(f: &mut Frame, app: &mut App, area: Rect) {
     app.list_top = inner.y;
     app.list_right = area.x + area.width;
     // Re-clamp in case the viewport changed size.
-    if app.selected >= app.offset + app.page {
-        app.offset = app.selected + 1 - app.page;
+    if let Some(&sel_row) = app.snap.commit_row.get(app.selected)
+        && sel_row >= app.offset + app.page
+    {
+        app.offset = sel_row + 1 - app.page;
     }
 
-    let n = app.snap.commits.len();
-    let end = (app.offset + app.page).min(n);
-    // Cap graph width so text stays readable on very wide histories.
+    let end = (app.offset + app.page).min(app.snap.rows.len());
+    // The graph has one width for every row (like git-igitt), so text lines
+    // up; cap it so text stays readable on very wide histories.
     let max_graph = (inner.width as usize * 2 / 5).max(8);
-    let graph_w = app.snap.rows[app.offset..end]
-        .iter()
-        .map(|r| r.cells.len())
-        .max()
-        .unwrap_or(0)
-        .min(max_graph);
+    let graph_w = app.snap.graph_width.min(max_graph);
     let show_author = inner.width >= 90;
 
     let now = chrono::Utc::now().timestamp();
-    let mut lines = Vec::with_capacity(end - app.offset);
-    for i in app.offset..end {
-        let c = &app.snap.commits[i];
-        let row = &app.snap.rows[i];
-        let selected = i == app.selected;
+    let mut lines = Vec::with_capacity(end.saturating_sub(app.offset));
+    for r in app.offset..end {
+        let row = &app.snap.rows[r];
         let mut spans: Vec<Span> = Vec::new();
 
         let cells: &[Cell] = &row.cells;
@@ -171,30 +166,26 @@ fn draw_graph(f: &mut Frame, app: &mut App, area: Rect) {
         let used = cells.len().min(graph_w);
         spans.push(Span::raw(" ".repeat(graph_w - used + 1)));
 
+        // Connector rows carry only graph lines.
+        let Some(i) = row.commit else {
+            lines.push(Line::from(spans));
+            continue;
+        };
+        let c = &app.snap.commits[i];
+        let selected = i == app.selected;
         let is_match = !app.query.is_empty() && app.matches.binary_search(&i).is_ok();
-        spans.push(Span::styled(
-            c.short.clone(),
-            Style::new()
-                .fg(if is_match {
-                    Color::Black
-                } else {
-                    Color::Yellow
-                })
-                .bg(if is_match {
-                    Color::Yellow
-                } else {
-                    Color::Reset
-                }),
-        ));
+        let hash_style = if is_match {
+            Style::new().fg(Color::Black).bg(Color::Yellow)
+        } else {
+            Style::new().fg(Color::Yellow)
+        };
+        spans.push(Span::styled(c.short.clone(), hash_style));
         spans.push(Span::raw(" "));
 
         if let Some(labels) = app.snap.refs.get(&c.id) {
             for l in labels {
-                let (text, style) = ref_style(
-                    &l.name,
-                    l.kind,
-                    app.snap.label_color(l).unwrap_or(row.color),
-                );
+                let (text, style) =
+                    ref_style(&l.name, l.kind, app.snap.label_color(l).unwrap_or(c.color));
                 spans.push(Span::styled(text, style));
                 spans.push(Span::raw(" "));
             }
@@ -318,22 +309,13 @@ fn draw_side(f: &mut Frame, app: &mut App, area: Rect, wide: bool) {
     if let Some(b) = &c.branch {
         lines.push(Line::from(vec![
             Span::styled("branch    ", Style::new().fg(DIM)),
-            Span::styled(
-                b.clone(),
-                Style::new().fg(color(app.snap.rows[app.selected].color)),
-            ),
+            Span::styled(b.clone(), Style::new().fg(color(c.color))),
         ]));
     }
     if let Some(labels) = app.snap.refs.get(&c.id) {
         let mut spans = vec![Span::styled("refs      ", Style::new().fg(DIM))];
         for l in labels {
-            let (t, s) = ref_style(
-                &l.name,
-                l.kind,
-                app.snap
-                    .label_color(l)
-                    .unwrap_or(app.snap.rows[app.selected].color),
-            );
+            let (t, s) = ref_style(&l.name, l.kind, app.snap.label_color(l).unwrap_or(c.color));
             spans.push(Span::styled(t, s));
             spans.push(Span::raw(" "));
         }
@@ -628,7 +610,7 @@ fn draw_branches(f: &mut Frame, app: &App, filter: &str, selected: usize) {
                 .snap
                 .index
                 .get(&b.target)
-                .map(|&r| app.snap.rows[r].color)
+                .map(|&i| app.snap.commits[i].color)
                 .unwrap_or(0);
             let (t, s) = ref_style(
                 &b.label.name,

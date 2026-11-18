@@ -145,14 +145,17 @@ impl App {
         let i = i.min(n - 1);
         let changed = i != self.selected || self.detail.is_none();
         self.selected = i;
-        // Keep the selection inside the viewport with a small margin.
+        // Keep the selected row inside the viewport with a small margin. The
+        // offset counts graph rows, which include connector-only rows.
+        let rows = self.snap.rows.len();
+        let row = self.snap.commit_row[i];
         let margin = 3.min(self.page / 4);
-        if self.selected < self.offset + margin {
-            self.offset = self.selected.saturating_sub(margin);
-        } else if self.selected + margin >= self.offset + self.page {
-            self.offset = (self.selected + margin + 1).saturating_sub(self.page);
+        if row < self.offset + margin {
+            self.offset = row.saturating_sub(margin);
+        } else if row + margin >= self.offset + self.page {
+            self.offset = (row + margin + 1).saturating_sub(self.page);
         }
-        self.offset = self.offset.min(n.saturating_sub(self.page.min(n)));
+        self.offset = self.offset.min(rows.saturating_sub(self.page.min(rows)));
         if changed {
             self.load_detail();
         }
@@ -213,8 +216,14 @@ impl App {
                     && ev.column < self.list_right
                     && ev.row >= self.list_top =>
             {
-                let i = self.offset + (ev.row - self.list_top) as usize;
-                if i < self.snap.commits.len() {
+                // A connector row selects the commit above it.
+                let r = self.offset + (ev.row - self.list_top) as usize;
+                let rows = &self.snap.rows;
+                let commit = rows[..rows.len().min(r + 1)]
+                    .iter()
+                    .rev()
+                    .find_map(|row| row.commit);
+                if let Some(i) = commit {
                     self.focus = Focus::Graph;
                     self.select(i);
                 }

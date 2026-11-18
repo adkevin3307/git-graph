@@ -1,10 +1,10 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::Path;
 
 use anyhow::{Context, Result, anyhow};
 use git2::{BranchType, Delta, DiffFindOptions, DiffOptions, Oid, Repository, Sort};
 
-use crate::graph::{self, Node, Row};
+use crate::graph::{self, BranchSpec, Node, Row};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum RefKind {
@@ -32,6 +32,8 @@ pub struct CommitInfo {
     pub offset_min: i32,
     /// Branch this commit is attributed to (from branch tips or merge messages).
     pub branch: Option<String>,
+    /// Palette index of that branch.
+    pub color: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -79,7 +81,12 @@ pub struct Snapshot {
     pub head: Option<Oid>,
     pub primary: Option<String>,
     pub commits: Vec<CommitInfo>,
+    /// Graph rows: one per commit plus connector-only rows.
     pub rows: Vec<Row>,
+    /// Row index of each commit.
+    pub commit_row: Vec<usize>,
+    /// Graph width in cells.
+    pub graph_width: usize,
     pub refs: HashMap<Oid, Vec<RefLabel>>,
     pub branches: Vec<BranchEntry>,
     pub index: HashMap<Oid, usize>,
@@ -120,6 +127,8 @@ pub fn open(path: &Path) -> Result<Repository> {
 pub fn load(repo: &Repository, opts: &LoadOptions) -> Result<Snapshot> {
     let mut refs: HashMap<Oid, Vec<RefLabel>> = HashMap::new();
     let mut branches = Vec::new();
+    // Branch tips in git's ref order, for tracing the graph.
+    let mut tips: Vec<(String, Oid)> = Vec::new();
     let mut walk = repo.revwalk()?;
     walk.set_sorting(Sort::TOPOLOGICAL | Sort::TIME)?;
 
@@ -165,6 +174,7 @@ pub fn load(repo: &Repository, opts: &LoadOptions) -> Result<Snapshot> {
             kind: if is_head { RefKind::Head } else { kind },
         };
         refs.entry(commit.id()).or_default().push(label.clone());
+        tips.push((label.name.clone(), commit.id()));
         branches.push(BranchEntry {
             label,
             target: commit.id(),
@@ -222,15 +232,12 @@ pub fn load(repo: &Repository, opts: &LoadOptions) -> Result<Snapshot> {
             time: author.when().seconds(),
             offset_min: author.when().offset_minutes(),
             branch: None,
+            color: 0,
         });
     }
     let index: HashMap<Oid, usize> = commits.iter().enumerate().map(|(i, c)| (c.id, i)).collect();
 
-    // Primary branch: its first-parent chain is pinned to lane 0.
-    let (primary_name, primary_set) = primary_chain(repo, opts.primary.as_deref(), &index)?;
-
-    // Attribute commits to branches so each branch keeps one color, stable
-    // across merges, rebases and restarts (the color is a hash of the name).
+    let primary_name = primary_branch(repo, opts.primary.as_deref())?;
     let remotes: Vec<String> = repo
         .remotes()?
         .iter()
@@ -239,30 +246,60 @@ pub fn load(repo: &Repository, opts: &LoadOptions) -> Result<Snapshot> {
         .map(str::to_string)
         .collect();
     let primary_norm = primary_name.as_deref().map(|p| normalize(p, &remotes));
-    let names = assign_branches(
-        &commits,
-        &index,
-        primary_norm.as_deref(),
-        &primary_set,
-        &branches,
-        &remotes,
-    );
-    for (c, name) in commits.iter_mut().zip(names) {
-        c.branch = name;
-    }
+    let primary = primary_norm.as_deref();
 
-    let rows = graph::layout(
-        commits.iter().map(|c| Node {
+    // Branches to trace, as git-igitt does: branch tips, plus branches named
+    // by merge messages (one per merged parent). Colors hash the branch name,
+    // so a branch keeps its color across merges, rebases and restarts.
+    let spec = |name: Option<String>, start: Oid, merge: Option<usize>| {
+        let norm = name.as_deref().map(|n| normalize(n, &remotes));
+        let (persistence, group, color) = match norm.as_deref() {
+            Some(n) => (
+                persistence(n, primary),
+                column_group(n, primary),
+                name_color(n, primary),
+            ),
+            None => (
+                graph::PERS_OTHER,
+                GROUPS,
+                name_color(&start.to_string(), primary),
+            ),
+        };
+        let fork_color = name_color(&format!("fork/{}", norm.as_deref().unwrap_or("")), primary);
+        BranchSpec {
+            name: norm,
+            start,
+            merge,
+            persistence,
+            group,
+            color,
+            fork_color,
+        }
+    };
+    let mut specs: Vec<BranchSpec> = tips
+        .iter()
+        .map(|(n, id)| spec(Some(n.clone()), *id, None))
+        .collect();
+    for (i, c) in commits.iter().enumerate() {
+        if c.parents.len() > 1 {
+            let (_, names) = parse_merge(&c.summary);
+            for (k, &p) in c.parents.iter().enumerate().skip(1) {
+                specs.push(spec(names.get(k - 1).cloned(), p, Some(i)));
+            }
+        }
+    }
+    let nodes: Vec<Node> = commits
+        .iter()
+        .map(|c| Node {
             id: c.id,
             parents: &c.parents,
-            color: c
-                .branch
-                .as_deref()
-                .map(|b| name_color(b, primary_norm.as_deref())),
-        }),
-        &primary_set,
-        opts.compact,
-    );
+        })
+        .collect();
+    let g = graph::layout(&nodes, specs, GROUPS, opts.compact);
+    for (i, c) in commits.iter_mut().enumerate() {
+        c.branch = g.commit_branch[i].clone();
+        c.color = g.commit_color[i];
+    }
 
     Ok(Snapshot {
         workdir: repo
@@ -276,7 +313,9 @@ pub fn load(repo: &Repository, opts: &LoadOptions) -> Result<Snapshot> {
         head,
         primary: primary_name,
         commits,
-        rows,
+        rows: g.rows,
+        commit_row: g.commit_row,
+        graph_width: g.width,
         refs,
         branches,
         index,
@@ -368,102 +407,72 @@ fn parse_merge(summary: &str) -> (Option<String>, Vec<String>) {
     (into, merged)
 }
 
-fn assign_branches(
-    commits: &[CommitInfo],
-    index: &HashMap<Oid, usize>,
-    primary: Option<&str>,
-    primary_set: &HashSet<Oid>,
-    branches: &[BranchEntry],
-    remotes: &[String],
-) -> Vec<Option<String>> {
-    let mut names: Vec<Option<String>> = vec![None; commits.len()];
-    // Claim the first-parent chain from `start` until an attributed commit.
-    let walk = |names: &mut Vec<Option<String>>, start: Oid, name: &str| {
-        let mut cur = start;
-        while let Some(&i) = index.get(&cur) {
-            if names[i].is_some() {
-                break;
-            }
-            names[i] = Some(name.to_string());
-            match commits[i].parents.first() {
-                Some(&p) => cur = p,
-                None => break,
-            }
-        }
-    };
+/// Number of named column groups (main | hotfix, release | develop); other
+/// branches use the next group. Matches git-igitt's default git-flow model.
+const GROUPS: usize = 3;
 
-    if let Some(p) = primary {
-        for &id in primary_set {
-            names[index[&id]] = Some(p.to_string());
-        }
-    }
-    // Branch tips: checked-out branch first, then local, then remote.
-    for b in branches {
-        walk(&mut names, b.target, &normalize(&b.label.name, remotes));
-    }
-    // Merged (possibly deleted) branches, named by merge messages, top-down.
-    for c in commits {
-        if c.parents.len() < 2 {
-            continue;
-        }
-        let (into, merged) = parse_merge(&c.summary);
-        if let Some(into) = into {
-            walk(&mut names, c.id, &normalize(&into, remotes));
-        }
-        for (k, name) in merged.iter().enumerate() {
-            if let Some(&p) = c.parents.get(k + 1) {
-                walk(&mut names, p, &normalize(name, remotes));
-            }
-        }
-    }
-    names
+fn is_main(name: &str, primary: Option<&str>) -> bool {
+    primary == Some(name) || matches!(name, "master" | "main" | "trunk")
 }
 
-fn primary_chain(
-    repo: &Repository,
-    explicit: Option<&str>,
-    index: &HashMap<Oid, usize>,
-) -> Result<(Option<String>, HashSet<Oid>)> {
-    let candidates: Vec<String> = match explicit {
-        Some(name) => vec![name.to_string()],
-        None => [
+/// Claim priority: which branch owns commits shared with another.
+fn persistence(name: &str, primary: Option<&str>) -> u8 {
+    if is_main(name, primary) {
+        0
+    } else if matches!(name, "develop" | "dev") {
+        1
+    } else if name.starts_with("feature") {
+        2
+    } else if name.starts_with("release") {
+        3
+    } else if name.starts_with("hotfix") {
+        4
+    } else if name.starts_with("bugfix") {
+        5
+    } else {
+        graph::PERS_OTHER
+    }
+}
+
+/// Column group, left to right.
+fn column_group(name: &str, primary: Option<&str>) -> usize {
+    if is_main(name, primary) {
+        0
+    } else if name.starts_with("hotfix") || name.starts_with("release") {
+        1
+    } else if matches!(name, "develop" | "dev") {
+        2
+    } else {
+        GROUPS
+    }
+}
+
+/// The trunk branch: shown first and always colored 0.
+fn primary_branch(repo: &Repository, explicit: Option<&str>) -> Result<Option<String>> {
+    let candidates: &[&str] = match explicit {
+        Some(name) => &[name],
+        None => &[
             "main",
             "master",
             "trunk",
             "develop",
             "origin/main",
             "origin/master",
-        ]
-        .iter()
-        .map(|s| s.to_string())
-        .collect(),
+        ],
     };
-    let mut found = None;
-    for name in &candidates {
-        if let Ok(obj) = repo.revparse_single(name)
-            && let Ok(c) = obj.peel_to_commit()
+    for name in candidates {
+        if repo
+            .revparse_single(name)
+            .and_then(|o| o.peel_to_commit())
+            .is_ok()
         {
-            found = Some((name.clone(), c));
-            break;
+            return Ok(Some(name.to_string()));
         }
     }
-    let Some((name, mut commit)) = found else {
-        if let Some(name) = explicit {
-            return Err(anyhow!("primary branch '{name}' not found"));
-        }
-        return Ok((None, HashSet::new()));
-    };
-    let mut set = HashSet::new();
-    loop {
-        if !index.contains_key(&commit.id()) || !set.insert(commit.id()) {
-            break;
-        }
-        match commit.parent(0) {
-            Ok(p) => commit = p,
-            Err(_) => break,
-        }
+    match explicit {
+        Some(name) => Err(anyhow!("primary branch '{name}' not found")),
+        None => Ok(None),
     }
-    Ok((Some(name), set))
 }
 
 fn diff_for<'r>(repo: &'r Repository, id: Oid, pathspec: Option<&str>) -> Result<git2::Diff<'r>> {

@@ -29,7 +29,8 @@ struct Cli {
     /// Branch pinned to the leftmost lane (default: main, master, trunk, develop).
     #[arg(short, long)]
     main: Option<String>,
-    /// Keep lanes in place instead of shifting them left into free columns.
+    /// Give every branch connector its own row instead of sharing free
+    /// commit rows (like git-igitt's --sparse).
     #[arg(long)]
     no_compact: bool,
     /// Disable mouse support (keeps terminal text selection working).
@@ -52,8 +53,13 @@ fn main() -> Result<()> {
 
     if cli.print {
         let snap = repo::load(&repo, &opts)?;
-        for (c, r) in snap.commits.iter().zip(&snap.rows) {
+        for r in &snap.rows {
             let g: String = r.cells.iter().map(graph::Cell::ch).collect();
+            let Some(i) = r.commit else {
+                println!("{}", g.trim_end());
+                continue;
+            };
+            let c = &snap.commits[i];
             let refs = snap
                 .refs
                 .get(&c.id)
