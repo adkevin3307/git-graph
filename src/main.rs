@@ -1,12 +1,19 @@
+mod app;
 mod graph;
 mod repo;
+mod ui;
 
 use std::path::PathBuf;
+use std::time::Duration;
 
 use anyhow::Result;
 use clap::Parser;
+use ratatui::crossterm::event::{
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyEventKind,
+};
+use ratatui::crossterm::execute;
 
-/// Terminal git graph viewer.
+/// Interactive terminal git graph viewer.
 #[derive(Parser)]
 #[command(version)]
 struct Cli {
@@ -25,6 +32,12 @@ struct Cli {
     /// Keep lanes in place instead of shifting them left into free columns.
     #[arg(long)]
     no_compact: bool,
+    /// Disable mouse support (keeps terminal text selection working).
+    #[arg(long)]
+    no_mouse: bool,
+    /// Print the graph to stdout instead of starting the TUI.
+    #[arg(long)]
+    print: bool,
 }
 
 fn main() -> Result<()> {
@@ -37,19 +50,48 @@ fn main() -> Result<()> {
         compact: !cli.no_compact,
     };
 
-    let snap = repo::load(&repo, &opts)?;
-    for (c, r) in snap.commits.iter().zip(&snap.rows) {
-        let g: String = r.cells.iter().map(graph::Cell::ch).collect();
-        let refs = snap
-            .refs
-            .get(&c.id)
-            .map(|ls| {
-                ls.iter()
-                    .map(|l| format!("({}) ", l.name))
-                    .collect::<String>()
-            })
-            .unwrap_or_default();
-        println!("{g:<16} {} {refs}{}", c.short, c.summary);
+    if cli.print {
+        let snap = repo::load(&repo, &opts)?;
+        for (c, r) in snap.commits.iter().zip(&snap.rows) {
+            let g: String = r.cells.iter().map(graph::Cell::ch).collect();
+            let refs = snap
+                .refs
+                .get(&c.id)
+                .map(|ls| {
+                    ls.iter()
+                        .map(|l| format!("({}) ", l.name))
+                        .collect::<String>()
+                })
+                .unwrap_or_default();
+            println!("{g:<16} {} {refs}{}", c.short, c.summary);
+        }
+        return Ok(());
+    }
+
+    let mut app = app::App::new(repo, opts)?;
+    let mut terminal = ratatui::init();
+    if !cli.no_mouse {
+        execute!(std::io::stdout(), EnableMouseCapture)?;
+    }
+    let result = run(&mut terminal, &mut app);
+    if !cli.no_mouse {
+        let _ = execute!(std::io::stdout(), DisableMouseCapture);
+    }
+    ratatui::restore();
+    result
+}
+
+fn run(terminal: &mut ratatui::DefaultTerminal, app: &mut app::App) -> Result<()> {
+    while !app.quit {
+        terminal.draw(|f| ui::draw(f, app))?;
+        if !event::poll(Duration::from_millis(500))? {
+            continue;
+        }
+        match event::read()? {
+            Event::Key(k) if k.kind != KeyEventKind::Release => app.on_key(k),
+            Event::Mouse(m) => app.on_mouse(m),
+            _ => {}
+        }
     }
     Ok(())
 }

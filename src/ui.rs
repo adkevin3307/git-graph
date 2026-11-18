@@ -1,0 +1,610 @@
+use chrono::{DateTime, FixedOffset, Local, TimeZone};
+use ratatui::Frame;
+use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{
+    Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap,
+};
+
+use crate::app::{App, Focus, Mode, branch_matches};
+use crate::graph::Cell;
+use crate::repo::{DiffKind, RefKind};
+
+const PALETTE: [Color; crate::graph::PALETTE_SIZE] = [
+    Color::LightBlue, // primary branch
+    Color::LightGreen,
+    Color::LightMagenta,
+    Color::LightYellow,
+    Color::LightCyan,
+    Color::LightRed,
+    Color::Rgb(255, 165, 80),
+    Color::Rgb(170, 140, 255),
+];
+const ACCENT: Color = Color::Cyan;
+const DIM: Color = Color::DarkGray;
+
+fn color(i: usize) -> Color {
+    PALETTE[i % PALETTE.len()]
+}
+
+pub fn draw(f: &mut Frame, app: &mut App) {
+    let [header, main, footer] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Min(3),
+        Constraint::Length(1),
+    ])
+    .areas(f.area());
+    draw_header(f, app, header);
+
+    if app.diff.is_some() {
+        draw_diff(f, app, main);
+    } else {
+        let wide = main.width >= 120;
+        let (list, side) = if wide {
+            let [a, b] =
+                Layout::horizontal([Constraint::Percentage(62), Constraint::Percentage(38)])
+                    .areas(main);
+            (a, b)
+        } else {
+            let [a, b] = Layout::vertical([Constraint::Percentage(60), Constraint::Percentage(40)])
+                .areas(main);
+            (a, b)
+        };
+        draw_graph(f, app, list);
+        draw_side(f, app, side, wide);
+    }
+    draw_footer(f, app, footer);
+
+    match &app.mode {
+        Mode::Help => draw_help(f),
+        Mode::Branches { filter, selected } => draw_branches(f, app, filter, *selected),
+        _ => {}
+    }
+}
+
+fn draw_header(f: &mut Frame, app: &App, area: Rect) {
+    let mut spans = vec![
+        Span::styled(
+            " git-graph ",
+            Style::new().bg(ACCENT).fg(Color::Black).bold(),
+        ),
+        Span::raw(" "),
+        Span::styled(short_path(&app.snap.workdir), Style::new().bold()),
+        Span::styled("  on ", Style::new().fg(DIM)),
+        Span::styled(
+            app.snap.head_name.clone(),
+            Style::new().fg(PALETTE[0]).bold(),
+        ),
+    ];
+    if let Some(p) = &app.snap.primary {
+        spans.push(Span::styled(format!("  trunk: {p}"), Style::new().fg(DIM)));
+    }
+    let count = format!(
+        "{}/{}{} ",
+        app.selected + 1,
+        app.snap.commits.len(),
+        if app.snap.truncated { "+" } else { "" }
+    );
+    let used: usize = spans.iter().map(|s| s.width()).sum();
+    let pad = (area.width as usize).saturating_sub(used + count.len());
+    spans.push(Span::raw(" ".repeat(pad)));
+    spans.push(Span::styled(count, Style::new().fg(DIM)));
+    f.render_widget(Line::from(spans), area);
+}
+
+fn panel(title: &str, focused: bool) -> Block<'_> {
+    Block::new()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(if focused { ACCENT } else { DIM }))
+        .title(Span::styled(
+            format!(" {title} "),
+            if focused {
+                Style::new().fg(ACCENT).bold()
+            } else {
+                Style::new()
+            },
+        ))
+}
+
+fn draw_graph(f: &mut Frame, app: &mut App, area: Rect) {
+    let block = panel("Commits", app.focus == Focus::Graph);
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    app.page = inner.height.max(1) as usize;
+    app.list_top = inner.y;
+    app.list_right = area.x + area.width;
+    // Re-clamp in case the viewport changed size.
+    if app.selected >= app.offset + app.page {
+        app.offset = app.selected + 1 - app.page;
+    }
+
+    let n = app.snap.commits.len();
+    let end = (app.offset + app.page).min(n);
+    // Cap graph width so text stays readable on very wide histories.
+    let max_graph = (inner.width as usize * 2 / 5).max(8);
+    let graph_w = app.snap.rows[app.offset..end]
+        .iter()
+        .map(|r| r.cells.len())
+        .max()
+        .unwrap_or(0)
+        .min(max_graph);
+    let show_author = inner.width >= 90;
+
+    let now = chrono::Utc::now().timestamp();
+    let mut lines = Vec::with_capacity(end - app.offset);
+    for i in app.offset..end {
+        let c = &app.snap.commits[i];
+        let row = &app.snap.rows[i];
+        let selected = i == app.selected;
+        let mut spans: Vec<Span> = Vec::new();
+
+        let cells: &[Cell] = &row.cells;
+        let truncated = cells.len() > graph_w;
+        for (x, cell) in cells.iter().take(graph_w).enumerate() {
+            let ch = if truncated && x == graph_w - 1 {
+                '…'
+            } else {
+                cell.ch()
+            };
+            let mut st = Style::new().fg(color(cell.color));
+            if matches!(
+                cell.glyph,
+                crate::graph::Glyph::Commit | crate::graph::Glyph::MergeCommit
+            ) {
+                st = st.bold();
+            }
+            spans.push(Span::styled(ch.to_string(), st));
+        }
+        let used = cells.len().min(graph_w);
+        spans.push(Span::raw(" ".repeat(graph_w - used + 1)));
+
+        let is_match = !app.query.is_empty() && app.matches.binary_search(&i).is_ok();
+        spans.push(Span::styled(
+            c.short.clone(),
+            Style::new()
+                .fg(if is_match {
+                    Color::Black
+                } else {
+                    Color::Yellow
+                })
+                .bg(if is_match {
+                    Color::Yellow
+                } else {
+                    Color::Reset
+                }),
+        ));
+        spans.push(Span::raw(" "));
+
+        if let Some(labels) = app.snap.refs.get(&c.id) {
+            for l in labels {
+                let (text, style) = ref_style(&l.name, l.kind, row.color);
+                spans.push(Span::styled(text, style));
+                spans.push(Span::raw(" "));
+            }
+        }
+        let mut summary_style = Style::new();
+        if c.parents.len() > 1 {
+            summary_style = summary_style.fg(Color::Gray);
+        }
+        // Right-aligned author + relative date; the summary is truncated to fit.
+        let meta = if show_author {
+            format!(
+                " {:>18} · {:>7} ",
+                truncate(&c.author, 18),
+                relative(now - c.time)
+            )
+        } else {
+            format!(" {:>7} ", relative(now - c.time))
+        };
+        let used: usize = spans.iter().map(|s| s.width()).sum();
+        let avail = inner.width as usize;
+        let meta_w = meta.chars().count();
+        let room = avail.saturating_sub(used + meta_w);
+        if room >= 12 {
+            let summary = truncate(&c.summary, room);
+            let pad = room - summary.chars().count();
+            spans.push(Span::styled(summary, summary_style));
+            spans.push(Span::raw(" ".repeat(pad)));
+            spans.push(Span::styled(meta, Style::new().fg(DIM)));
+        } else {
+            spans.push(Span::styled(c.summary.clone(), summary_style));
+        }
+        let mut line = Line::from(spans);
+        if selected {
+            let bg = if app.focus == Focus::Graph {
+                Color::Rgb(45, 55, 75)
+            } else {
+                Color::Rgb(35, 38, 45)
+            };
+            line = line.style(Style::new().bg(bg));
+        }
+        lines.push(line);
+    }
+    f.render_widget(Paragraph::new(lines), inner);
+}
+
+fn ref_style(name: &str, kind: RefKind, lane_color: usize) -> (String, Style) {
+    match kind {
+        RefKind::Head => (
+            format!("[HEAD → {name}]"),
+            Style::new().fg(Color::Black).bg(color(lane_color)).bold(),
+        ),
+        RefKind::Local => (
+            format!("[{name}]"),
+            Style::new().fg(color(lane_color)).bold(),
+        ),
+        RefKind::Remote => (
+            format!("[{name}]"),
+            Style::new()
+                .fg(color(lane_color))
+                .add_modifier(Modifier::ITALIC | Modifier::DIM),
+        ),
+        RefKind::Tag => (
+            format!("<{name}>"),
+            Style::new().fg(Color::LightYellow).bold(),
+        ),
+    }
+}
+
+fn draw_side(f: &mut Frame, app: &mut App, area: Rect, wide: bool) {
+    let [info, files] = if wide {
+        Layout::vertical([Constraint::Percentage(45), Constraint::Percentage(55)]).areas(area)
+    } else {
+        Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).areas(area)
+    };
+
+    let Some(c) = app.snap.commits.get(app.selected) else {
+        f.render_widget(panel("Commit", false), info);
+        f.render_widget(panel("Files", false), files);
+        return;
+    };
+    let mut lines = vec![
+        Line::from(vec![
+            Span::styled("hash      ", Style::new().fg(DIM)),
+            Span::styled(c.id.to_string(), Style::new().fg(Color::Yellow)),
+        ]),
+        Line::from(vec![
+            Span::styled("author    ", Style::new().fg(DIM)),
+            Span::raw(format!("{} <{}>", c.author, c.email)),
+        ]),
+        Line::from(vec![
+            Span::styled("date      ", Style::new().fg(DIM)),
+            Span::raw(fmt_time(c.time, c.offset_min)),
+        ]),
+    ];
+    if let Some(d) = &app.detail
+        && (!d.committer.starts_with(&format!("{} <", c.author)) || d.commit_time != c.time)
+    {
+        lines.push(Line::from(vec![
+            Span::styled("committer ", Style::new().fg(DIM)),
+            Span::raw(format!(
+                "{} · {}",
+                d.committer,
+                fmt_time(d.commit_time, d.commit_offset)
+            )),
+        ]));
+    }
+    if !c.parents.is_empty() {
+        let mut spans = vec![Span::styled(
+            if c.parents.len() > 1 {
+                "parents   "
+            } else {
+                "parent    "
+            },
+            Style::new().fg(DIM),
+        )];
+        for p in &c.parents {
+            let s = p.to_string();
+            let loaded = app.snap.index.contains_key(p);
+            spans.push(Span::styled(
+                s[..8].to_string(),
+                Style::new().fg(if loaded { Color::Yellow } else { DIM }),
+            ));
+            spans.push(Span::raw(" "));
+        }
+        lines.push(Line::from(spans));
+    }
+    if let Some(labels) = app.snap.refs.get(&c.id) {
+        let mut spans = vec![Span::styled("refs      ", Style::new().fg(DIM))];
+        for l in labels {
+            let (t, s) = ref_style(&l.name, l.kind, app.snap.rows[app.selected].color);
+            spans.push(Span::styled(t, s));
+            spans.push(Span::raw(" "));
+        }
+        lines.push(Line::from(spans));
+    }
+    lines.push(Line::raw(""));
+    if let Some(d) = &app.detail {
+        let mut first = true;
+        for l in d.message.lines() {
+            lines.push(if first {
+                Line::styled(l.to_string(), Style::new().bold())
+            } else {
+                Line::raw(l.to_string())
+            });
+            first = false;
+        }
+    }
+    f.render_widget(
+        Paragraph::new(lines)
+            .wrap(Wrap { trim: false })
+            .block(panel("Commit", false)),
+        info,
+    );
+
+    // Files
+    let focused = app.focus == Focus::Files;
+    let Some(d) = &app.detail else {
+        f.render_widget(panel("Files", focused), files);
+        return;
+    };
+    let (adds, dels): (usize, usize) = d
+        .files
+        .iter()
+        .fold((0, 0), |(a, r), x| (a + x.added, r + x.removed));
+    let title = format!("Files ({})  +{adds} -{dels}", d.files.len());
+    let items: Vec<ListItem> = d
+        .files
+        .iter()
+        .map(|fc| {
+            let sc = match fc.status {
+                'A' => Color::LightGreen,
+                'D' => Color::LightRed,
+                'R' | 'C' => Color::LightMagenta,
+                _ => Color::LightYellow,
+            };
+            let mut spans = vec![Span::styled(
+                format!("{} ", fc.status),
+                Style::new().fg(sc).bold(),
+            )];
+            if let Some(old) = &fc.old_path {
+                spans.push(Span::styled(format!("{old} → "), Style::new().fg(DIM)));
+            }
+            spans.push(Span::raw(fc.path.clone()));
+            spans.push(Span::styled(
+                format!(" +{}", fc.added),
+                Style::new().fg(Color::Green),
+            ));
+            spans.push(Span::styled(
+                format!(" -{}", fc.removed),
+                Style::new().fg(Color::Red),
+            ));
+            ListItem::new(Line::from(spans))
+        })
+        .collect();
+    let list = List::new(items)
+        .block(panel(&title, focused))
+        .highlight_style(Style::new().bg(if focused {
+            Color::Rgb(45, 55, 75)
+        } else {
+            Color::Rgb(35, 38, 45)
+        }))
+        .highlight_symbol(if focused { "▶ " } else { "  " });
+    let mut state = ListState::default().with_selected(Some(app.file_selected));
+    f.render_stateful_widget(list, files, &mut state);
+}
+
+fn draw_diff(f: &mut Frame, app: &mut App, area: Rect) {
+    let Some(d) = &app.diff else { return };
+    let block = panel(&d.title, true);
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    app.page = inner.height.max(1) as usize;
+    let lines: Vec<Line> = d
+        .lines
+        .iter()
+        .skip(d.scroll)
+        .take(inner.height as usize)
+        .map(|l| {
+            let st = match l.kind {
+                DiffKind::Header => Style::new().bold(),
+                DiffKind::Hunk => Style::new().fg(Color::Cyan),
+                DiffKind::Add => Style::new().fg(Color::LightGreen),
+                DiffKind::Del => Style::new().fg(Color::LightRed),
+                DiffKind::Context => Style::new(),
+            };
+            Line::styled(l.text.clone(), st)
+        })
+        .collect();
+    f.render_widget(Paragraph::new(lines), inner);
+}
+
+fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
+    let line = match &app.mode {
+        Mode::Search { input } => Line::from(vec![
+            Span::styled("/", Style::new().fg(ACCENT).bold()),
+            Span::raw(input.clone()),
+            Span::styled("█", Style::new().fg(ACCENT)),
+        ]),
+        Mode::Confirm { prompt, .. } => Line::styled(
+            prompt.clone(),
+            Style::new().fg(Color::Black).bg(Color::Yellow).bold(),
+        ),
+        _ if !app.status.is_empty() => {
+            Line::styled(format!(" {}", app.status), Style::new().fg(Color::Yellow))
+        }
+        _ => {
+            let keys: &[(&str, &str)] = if app.diff.is_some() {
+                &[
+                    ("j/k", "scroll"),
+                    ("[ ]", "prev/next file"),
+                    ("esc", "back"),
+                    ("?", "help"),
+                ]
+            } else {
+                &[
+                    ("j/k", "move"),
+                    ("tab", "focus"),
+                    ("enter", "open"),
+                    ("/", "search"),
+                    ("b", "branches"),
+                    ("p/m/c", "parent/merge/child"),
+                    ("o", "checkout"),
+                    ("?", "help"),
+                    ("q", "quit"),
+                ]
+            };
+            let mut spans = vec![Span::raw(" ")];
+            for (k, v) in keys {
+                spans.push(Span::styled(*k, Style::new().fg(ACCENT).bold()));
+                spans.push(Span::styled(format!(" {v}  "), Style::new().fg(DIM)));
+            }
+            Line::from(spans)
+        }
+    };
+    f.render_widget(line, area);
+}
+
+fn centered(area: Rect, w: u16, h: u16) -> Rect {
+    let w = w.min(area.width.saturating_sub(2));
+    let h = h.min(area.height.saturating_sub(2));
+    Rect::new(
+        area.x + (area.width - w) / 2,
+        area.y + (area.height - h) / 2,
+        w,
+        h,
+    )
+}
+
+fn draw_help(f: &mut Frame) {
+    let rows: &[(&str, &str)] = &[
+        ("Navigation", ""),
+        ("j/k ↑/↓", "move selection"),
+        ("ctrl-d/u, PgDn/PgUp", "half / full page"),
+        ("g/G", "first / last commit"),
+        ("H", "jump to HEAD"),
+        ("p / m / c", "first parent / merged parent / child"),
+        ("b", "branch & tag picker (type to filter)"),
+        ("Search", ""),
+        ("/", "search message, author, hash, refs"),
+        ("n / N", "next / previous match"),
+        ("Details", ""),
+        ("tab", "switch focus commits ↔ files"),
+        ("enter / l", "open files / file diff"),
+        ("D", "diff of the whole commit"),
+        ("[ ] (in diff)", "previous / next file"),
+        ("Actions", ""),
+        ("o", "checkout branch at commit (or detach)"),
+        ("y", "copy commit hash (OSC 52)"),
+        ("r", "reload repository"),
+        ("q", "quit"),
+    ];
+    let lines: Vec<Line> = rows
+        .iter()
+        .map(|(k, v)| {
+            if v.is_empty() {
+                Line::styled(format!(" {k}"), Style::new().fg(ACCENT).bold())
+            } else {
+                Line::from(vec![
+                    Span::styled(format!("   {k:<22}"), Style::new().fg(Color::Yellow)),
+                    Span::raw(*v),
+                ])
+            }
+        })
+        .collect();
+    let area = centered(f.area(), 66, lines.len() as u16 + 2);
+    f.render_widget(Clear, area);
+    f.render_widget(
+        Paragraph::new(lines).block(panel("Help — any key to close", true)),
+        area,
+    );
+}
+
+fn draw_branches(f: &mut Frame, app: &App, filter: &str, selected: usize) {
+    let idx = branch_matches(&app.snap, filter);
+    let area = centered(f.area(), 60, 20);
+    f.render_widget(Clear, area);
+    let block = panel("Branches", true);
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    let [input, list_area] =
+        Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).areas(inner);
+    f.render_widget(
+        Line::from(vec![
+            Span::styled(" filter: ", Style::new().fg(DIM)),
+            Span::raw(filter.to_string()),
+            Span::styled("█", Style::new().fg(ACCENT)),
+        ]),
+        input,
+    );
+    let items: Vec<ListItem> = idx
+        .iter()
+        .map(|&i| {
+            let b = &app.snap.branches[i];
+            let lane_color = app
+                .snap
+                .index
+                .get(&b.target)
+                .map(|&r| app.snap.rows[r].color)
+                .unwrap_or(0);
+            let (t, s) = ref_style(&b.label.name, b.label.kind, lane_color);
+            ListItem::new(Line::from(vec![
+                Span::styled(t, s),
+                Span::styled(
+                    format!("  {}", &b.target.to_string()[..8]),
+                    Style::new().fg(DIM),
+                ),
+            ]))
+        })
+        .collect();
+    let list = List::new(items)
+        .highlight_style(Style::new().bg(Color::Rgb(45, 55, 75)))
+        .highlight_symbol("▶ ");
+    let mut state =
+        ListState::default().with_selected(if idx.is_empty() { None } else { Some(selected) });
+    f.render_stateful_widget(list, list_area, &mut state);
+}
+
+fn short_path(p: &str) -> String {
+    match std::env::var("HOME") {
+        Ok(home) if !home.is_empty() && p.starts_with(&home) => format!("~{}", &p[home.len()..]),
+        _ => p.to_string(),
+    }
+    .rsplit('/')
+    .take(2)
+    .collect::<Vec<_>>()
+    .into_iter()
+    .rev()
+    .collect::<Vec<_>>()
+    .join("/")
+}
+
+fn truncate(s: &str, n: usize) -> String {
+    if s.chars().count() <= n {
+        s.to_string()
+    } else if n == 0 {
+        String::new()
+    } else {
+        format!("{}…", s.chars().take(n - 1).collect::<String>())
+    }
+}
+
+fn relative(secs: i64) -> String {
+    let s = secs.max(0);
+    match s {
+        0..60 => "now".into(),
+        60..3600 => format!("{}m ago", s / 60),
+        3600..86400 => format!("{}h ago", s / 3600),
+        86400..2_592_000 => format!("{}d ago", s / 86400),
+        2_592_000..31_536_000 => format!("{}mo ago", s / 2_592_000),
+        _ => format!("{}y ago", s / 31_536_000),
+    }
+}
+
+fn fmt_time(secs: i64, offset_min: i32) -> String {
+    let tz =
+        FixedOffset::east_opt(offset_min * 60).unwrap_or_else(|| FixedOffset::east_opt(0).unwrap());
+    match tz.timestamp_opt(secs, 0).single() {
+        Some(t) => {
+            let local: DateTime<Local> = t.with_timezone(&Local);
+            format!(
+                "{} ({})",
+                t.format("%Y-%m-%d %H:%M %:z"),
+                local.format("%a")
+            )
+        }
+        None => secs.to_string(),
+    }
+}

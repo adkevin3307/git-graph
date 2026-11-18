@@ -1,0 +1,571 @@
+use std::io::Write;
+
+use anyhow::Result;
+use git2::{Oid, Repository};
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
+
+use crate::repo::{self, CommitDetail, DiffLine, LoadOptions, RefKind, Snapshot};
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Focus {
+    Graph,
+    Files,
+}
+
+pub enum Mode {
+    Normal,
+    Search { input: String },
+    Branches { filter: String, selected: usize },
+    Confirm { prompt: String, action: Pending },
+    Help,
+}
+
+pub enum Pending {
+    Checkout { id: Oid, branch: Option<String> },
+}
+
+pub struct DiffView {
+    pub title: String,
+    pub lines: Vec<DiffLine>,
+    pub scroll: usize,
+    pub file_index: Option<usize>,
+}
+
+pub struct App {
+    pub repo: Repository,
+    pub opts: LoadOptions,
+    pub snap: Snapshot,
+    pub selected: usize,
+    pub offset: usize,
+    pub focus: Focus,
+    pub mode: Mode,
+    pub detail: Option<CommitDetail>,
+    pub file_selected: usize,
+    pub diff: Option<DiffView>,
+    pub query: String,
+    pub matches: Vec<usize>,
+    pub status: String,
+    pub quit: bool,
+    /// Height of the graph list in rows, updated on draw.
+    pub page: usize,
+    /// Top of the graph list area on screen (for mouse clicks).
+    pub list_top: u16,
+    pub list_right: u16,
+}
+
+impl App {
+    pub fn new(repo: Repository, opts: LoadOptions) -> Result<Self> {
+        let snap = repo::load(&repo, &opts)?;
+        let mut app = App {
+            repo,
+            opts,
+            snap,
+            selected: 0,
+            offset: 0,
+            focus: Focus::Graph,
+            mode: Mode::Normal,
+            detail: None,
+            file_selected: 0,
+            diff: None,
+            query: String::new(),
+            matches: Vec::new(),
+            status: String::new(),
+            quit: false,
+            page: 20,
+            list_top: 0,
+            list_right: 0,
+        };
+        if let Some(i) = app.snap.head.and_then(|h| app.snap.index.get(&h).copied()) {
+            app.select(i);
+        }
+        app.load_detail();
+        if app.snap.truncated {
+            app.status = format!(
+                "Showing first {} commits (use -n to change)",
+                app.snap.commits.len()
+            );
+        }
+        Ok(app)
+    }
+
+    pub fn reload(&mut self) {
+        let current = self.snap.commits.get(self.selected).map(|c| c.id);
+        match repo::load(&self.repo, &self.opts) {
+            Ok(s) => {
+                self.snap = s;
+                let i = current
+                    .and_then(|id| self.snap.index.get(&id).copied())
+                    .unwrap_or(0);
+                self.selected = 0;
+                self.select(i);
+                self.recompute_matches();
+                self.status = "Reloaded".into();
+            }
+            Err(e) => self.status = format!("Reload failed: {e:#}"),
+        }
+    }
+
+    fn select(&mut self, i: usize) {
+        let n = self.snap.commits.len();
+        if n == 0 {
+            return;
+        }
+        let i = i.min(n - 1);
+        let changed = i != self.selected || self.detail.is_none();
+        self.selected = i;
+        // Keep the selection inside the viewport with a small margin.
+        let margin = 3.min(self.page / 4);
+        if self.selected < self.offset + margin {
+            self.offset = self.selected.saturating_sub(margin);
+        } else if self.selected + margin >= self.offset + self.page {
+            self.offset = (self.selected + margin + 1).saturating_sub(self.page);
+        }
+        self.offset = self.offset.min(n.saturating_sub(self.page.min(n)));
+        if changed {
+            self.load_detail();
+        }
+    }
+
+    fn load_detail(&mut self) {
+        self.file_selected = 0;
+        self.detail = self
+            .snap
+            .commits
+            .get(self.selected)
+            .and_then(|c| repo::detail(&self.repo, c.id).ok());
+    }
+
+    fn select_id(&mut self, id: Oid) -> bool {
+        match self.snap.index.get(&id).copied() {
+            Some(i) => {
+                self.select(i);
+                true
+            }
+            None => {
+                self.status = format!("{} is not loaded (try a larger -n)", &id.to_string()[..8]);
+                false
+            }
+        }
+    }
+
+    pub fn on_mouse(&mut self, ev: MouseEvent) {
+        if !matches!(self.mode, Mode::Normal) {
+            return;
+        }
+        match ev.kind {
+            MouseEventKind::ScrollDown => self.scroll(3),
+            MouseEventKind::ScrollUp => self.scroll(-3),
+            MouseEventKind::Down(_)
+                if self.diff.is_none()
+                    && ev.column < self.list_right
+                    && ev.row >= self.list_top =>
+            {
+                let i = self.offset + (ev.row - self.list_top) as usize;
+                if i < self.snap.commits.len() {
+                    self.focus = Focus::Graph;
+                    self.select(i);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn scroll(&mut self, delta: isize) {
+        if let Some(d) = &mut self.diff {
+            d.scroll = d
+                .scroll
+                .saturating_add_signed(delta)
+                .min(d.lines.len().saturating_sub(1));
+        } else {
+            self.move_by(delta);
+        }
+    }
+
+    fn move_by(&mut self, delta: isize) {
+        match self.focus {
+            Focus::Graph => self.select(self.selected.saturating_add_signed(delta)),
+            Focus::Files => {
+                let n = self.detail.as_ref().map_or(0, |d| d.files.len());
+                if n > 0 {
+                    self.file_selected = self.file_selected.saturating_add_signed(delta).min(n - 1);
+                }
+            }
+        }
+    }
+
+    pub fn on_key(&mut self, key: KeyEvent) {
+        match &mut self.mode {
+            Mode::Normal => self.key_normal(key),
+            Mode::Help => self.mode = Mode::Normal,
+            Mode::Search { input } => match key.code {
+                KeyCode::Esc => self.mode = Mode::Normal,
+                KeyCode::Enter => {
+                    self.query = std::mem::take(input);
+                    self.mode = Mode::Normal;
+                    self.recompute_matches();
+                    if self.matches.is_empty() {
+                        if !self.query.is_empty() {
+                            self.status = format!("No match for '{}'", self.query);
+                        }
+                    } else {
+                        self.next_match(true, true);
+                    }
+                }
+                KeyCode::Backspace => {
+                    input.pop();
+                }
+                KeyCode::Char(c) => input.push(c),
+                _ => {}
+            },
+            Mode::Branches { filter, selected } => {
+                let visible = branch_matches(&self.snap, filter);
+                match key.code {
+                    KeyCode::Esc => self.mode = Mode::Normal,
+                    KeyCode::Down | KeyCode::Tab => {
+                        *selected = (*selected + 1).min(visible.len().saturating_sub(1))
+                    }
+                    KeyCode::Up | KeyCode::BackTab => *selected = selected.saturating_sub(1),
+                    KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        *selected = (*selected + 1).min(visible.len().saturating_sub(1))
+                    }
+                    KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        *selected = selected.saturating_sub(1)
+                    }
+                    KeyCode::Backspace => {
+                        filter.pop();
+                        *selected = 0;
+                    }
+                    KeyCode::Char(c) => {
+                        filter.push(c);
+                        *selected = 0;
+                    }
+                    KeyCode::Enter => {
+                        let target = visible.get(*selected).map(|&i| {
+                            (
+                                self.snap.branches[i].target,
+                                self.snap.branches[i].label.name.clone(),
+                            )
+                        });
+                        self.mode = Mode::Normal;
+                        if let Some((id, name)) = target
+                            && self.select_id(id)
+                        {
+                            self.focus = Focus::Graph;
+                            self.diff = None;
+                            self.status = format!("Jumped to {name}");
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            Mode::Confirm { .. } => {
+                let Mode::Confirm { action, .. } = std::mem::replace(&mut self.mode, Mode::Normal)
+                else {
+                    unreachable!()
+                };
+                if matches!(key.code, KeyCode::Char('y') | KeyCode::Char('Y')) {
+                    match action {
+                        Pending::Checkout { id, branch } => {
+                            match repo::checkout(&self.repo, id, branch.as_deref()) {
+                                Ok(msg) => {
+                                    self.reload();
+                                    self.status = msg;
+                                }
+                                Err(e) => self.status = format!("{e:#}"),
+                            }
+                        }
+                    }
+                } else {
+                    self.status = "Cancelled".into();
+                }
+            }
+        }
+    }
+
+    fn key_normal(&mut self, key: KeyEvent) {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let half = (self.page / 2).max(1) as isize;
+        if self.diff.is_some() {
+            self.key_diff(key, ctrl, half);
+            return;
+        }
+        self.status.clear();
+        match key.code {
+            KeyCode::Char('q') => self.quit = true,
+            KeyCode::Char('c') if ctrl => self.quit = true,
+            KeyCode::Char('?') => self.mode = Mode::Help,
+            KeyCode::Down | KeyCode::Char('j') => self.move_by(1),
+            KeyCode::Up | KeyCode::Char('k') => self.move_by(-1),
+            KeyCode::Char('d') if ctrl => self.move_by(half),
+            KeyCode::Char('u') if ctrl => self.move_by(-half),
+            KeyCode::PageDown | KeyCode::Char('f') if key.code == KeyCode::PageDown || ctrl => {
+                self.move_by(self.page as isize)
+            }
+            KeyCode::PageUp | KeyCode::Char('b') if key.code == KeyCode::PageUp || ctrl => {
+                self.move_by(-(self.page as isize))
+            }
+            KeyCode::Home | KeyCode::Char('g') => self.move_by(isize::MIN / 2),
+            KeyCode::End | KeyCode::Char('G') => self.move_by(isize::MAX / 2),
+            KeyCode::Tab | KeyCode::BackTab => {
+                self.focus = if self.focus == Focus::Graph {
+                    Focus::Files
+                } else {
+                    Focus::Graph
+                };
+            }
+            KeyCode::Enter | KeyCode::Char('l') | KeyCode::Right => match self.focus {
+                Focus::Graph => {
+                    if self.detail.as_ref().is_some_and(|d| !d.files.is_empty()) {
+                        self.focus = Focus::Files;
+                    }
+                }
+                Focus::Files => self.open_diff(Some(self.file_selected)),
+            },
+            KeyCode::Esc | KeyCode::Char('h') | KeyCode::Left => self.focus = Focus::Graph,
+            KeyCode::Char('D') => self.open_diff(None),
+            KeyCode::Char('/') => {
+                self.mode = Mode::Search {
+                    input: String::new(),
+                }
+            }
+            KeyCode::Char('n') => self.next_match(true, false),
+            KeyCode::Char('N') => self.next_match(false, false),
+            KeyCode::Char('b') => {
+                self.mode = Mode::Branches {
+                    filter: String::new(),
+                    selected: 0,
+                }
+            }
+            KeyCode::Char('H') => {
+                if let Some(h) = self.snap.head
+                    && self.select_id(h)
+                {
+                    self.status = format!("HEAD → {}", self.snap.head_name);
+                }
+            }
+            KeyCode::Char('p') => self.goto_parent(0),
+            KeyCode::Char('m') => self.goto_parent(1),
+            KeyCode::Char('c') => self.child(),
+            KeyCode::Char('o') => self.ask_checkout(),
+            KeyCode::Char('y') => self.yank(),
+            KeyCode::Char('r') => self.reload(),
+            _ => {}
+        }
+    }
+
+    fn key_diff(&mut self, key: KeyEvent, ctrl: bool, half: isize) {
+        let d = self.diff.as_mut().unwrap();
+        let max = d.lines.len().saturating_sub(1);
+        let mut scroll = |delta: isize| d.scroll = d.scroll.saturating_add_signed(delta).min(max);
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('h') | KeyCode::Left => {
+                self.diff = None
+            }
+            KeyCode::Down | KeyCode::Char('j') => scroll(1),
+            KeyCode::Up | KeyCode::Char('k') => scroll(-1),
+            KeyCode::Char('d') if ctrl => scroll(half),
+            KeyCode::Char('u') if ctrl => scroll(-half),
+            KeyCode::PageDown | KeyCode::Char(' ') => scroll(self.page as isize),
+            KeyCode::PageUp => scroll(-(self.page as isize)),
+            KeyCode::Home | KeyCode::Char('g') => d.scroll = 0,
+            KeyCode::End | KeyCode::Char('G') => d.scroll = max,
+            KeyCode::Char(']') | KeyCode::Char('J') => self.step_diff_file(1),
+            KeyCode::Char('[') | KeyCode::Char('K') => self.step_diff_file(-1),
+            KeyCode::Char('y') => self.yank(),
+            _ => {}
+        }
+    }
+
+    fn step_diff_file(&mut self, delta: isize) {
+        let Some(i) = self.diff.as_ref().and_then(|d| d.file_index) else {
+            return;
+        };
+        let n = self.detail.as_ref().map_or(0, |d| d.files.len());
+        let j = i.saturating_add_signed(delta);
+        if j < n && j != i {
+            self.file_selected = j;
+            self.open_diff(Some(j));
+        }
+    }
+
+    fn open_diff(&mut self, file: Option<usize>) {
+        let Some(detail) = &self.detail else { return };
+        let f = file.and_then(|i| detail.files.get(i));
+        if file.is_some() && f.is_none() {
+            return;
+        }
+        let short = &detail.id.to_string()[..8];
+        let title = match f {
+            Some(f) => format!(
+                "{short} {}  [{}/{}]",
+                f.path,
+                file.unwrap() + 1,
+                detail.files.len()
+            ),
+            None => format!("{short} (all files)"),
+        };
+        match repo::file_diff(&self.repo, detail.id, f) {
+            Ok(lines) => {
+                self.diff = Some(DiffView {
+                    title,
+                    lines,
+                    scroll: 0,
+                    file_index: file,
+                })
+            }
+            Err(e) => self.status = format!("Diff failed: {e:#}"),
+        }
+    }
+
+    fn goto_parent(&mut self, n: usize) {
+        let Some(c) = self.snap.commits.get(self.selected) else {
+            return;
+        };
+        match c.parents.get(n).copied() {
+            Some(p) => {
+                self.select_id(p);
+            }
+            None => {
+                self.status = if n == 0 {
+                    "Root commit".into()
+                } else {
+                    "Not a merge commit".into()
+                }
+            }
+        }
+    }
+
+    fn child(&mut self) {
+        let Some(c) = self.snap.commits.get(self.selected) else {
+            return;
+        };
+        let id = c.id;
+        // Children always appear above the commit in topological order; pick the nearest.
+        let child = (0..self.selected)
+            .rev()
+            .find(|&i| self.snap.commits[i].parents.contains(&id));
+        match child {
+            Some(i) => self.select(i),
+            None => self.status = "No child commit".into(),
+        }
+    }
+
+    fn ask_checkout(&mut self) {
+        let Some(c) = self.snap.commits.get(self.selected) else {
+            return;
+        };
+        let branch = self
+            .snap
+            .refs
+            .get(&c.id)
+            .and_then(|labels| {
+                labels
+                    .iter()
+                    .find(|l| matches!(l.kind, RefKind::Local | RefKind::Head))
+            })
+            .map(|l| l.name.clone());
+        let prompt = match &branch {
+            Some(b) => format!("Checkout branch '{b}'? (y/N)"),
+            None => format!("Checkout {} (detached HEAD)? (y/N)", c.short),
+        };
+        self.mode = Mode::Confirm {
+            prompt,
+            action: Pending::Checkout { id: c.id, branch },
+        };
+    }
+
+    /// Copy the commit hash to the clipboard using the OSC 52 terminal escape.
+    fn yank(&mut self) {
+        let Some(c) = self.snap.commits.get(self.selected) else {
+            return;
+        };
+        let hash = c.id.to_string();
+        let seq = format!("\x1b]52;c;{}\x07", base64(hash.as_bytes()));
+        let mut out = std::io::stdout();
+        let _ = out.write_all(seq.as_bytes()).and_then(|_| out.flush());
+        self.status = format!("Copied {hash}");
+    }
+
+    pub fn recompute_matches(&mut self) {
+        self.matches.clear();
+        if self.query.is_empty() {
+            return;
+        }
+        let q = self.query.to_lowercase();
+        for (i, c) in self.snap.commits.iter().enumerate() {
+            let hit = c.summary.to_lowercase().contains(&q)
+                || c.author.to_lowercase().contains(&q)
+                || c.email.to_lowercase().contains(&q)
+                || c.id.to_string().starts_with(&q)
+                || self
+                    .snap
+                    .refs
+                    .get(&c.id)
+                    .is_some_and(|ls| ls.iter().any(|l| l.name.to_lowercase().contains(&q)));
+            if hit {
+                self.matches.push(i);
+            }
+        }
+    }
+
+    fn next_match(&mut self, forward: bool, inclusive: bool) {
+        if self.matches.is_empty() {
+            self.status = if self.query.is_empty() {
+                "No search (press /)".into()
+            } else {
+                format!("No match for '{}'", self.query)
+            };
+            return;
+        }
+        let cur = self.selected;
+        let target = if forward {
+            self.matches
+                .iter()
+                .copied()
+                .find(|&i| if inclusive { i >= cur } else { i > cur })
+                .unwrap_or(self.matches[0])
+        } else {
+            self.matches
+                .iter()
+                .rev()
+                .copied()
+                .find(|&i| i < cur)
+                .unwrap_or(*self.matches.last().unwrap())
+        };
+        self.focus = Focus::Graph;
+        self.select(target);
+        let pos = self.matches.iter().position(|&i| i == target).unwrap() + 1;
+        self.status = format!("[{pos}/{}] '{}'", self.matches.len(), self.query);
+    }
+}
+
+pub fn branch_matches(snap: &Snapshot, filter: &str) -> Vec<usize> {
+    let f = filter.to_lowercase();
+    snap.branches
+        .iter()
+        .enumerate()
+        .filter(|(_, b)| b.label.name.to_lowercase().contains(&f))
+        .map(|(i, _)| i)
+        .collect()
+}
+
+fn base64(data: &[u8]) -> String {
+    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::new();
+    for chunk in data.chunks(3) {
+        let b = [
+            chunk[0],
+            *chunk.get(1).unwrap_or(&0),
+            *chunk.get(2).unwrap_or(&0),
+        ];
+        let n = (b[0] as u32) << 16 | (b[1] as u32) << 8 | b[2] as u32;
+        for i in 0..4 {
+            if i <= chunk.len() {
+                out.push(T[(n >> (18 - 6 * i) & 63) as usize] as char);
+            } else {
+                out.push('=');
+            }
+        }
+    }
+    out
+}
