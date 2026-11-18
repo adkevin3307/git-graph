@@ -148,14 +148,10 @@ fn draw_graph(f: &mut Frame, app: &mut App, area: Rect) {
             } else {
                 cell.ch()
             };
-            let mut st = Style::new().fg(color(cell.color));
-            if matches!(
-                cell.glyph,
-                crate::graph::Glyph::Commit | crate::graph::Glyph::MergeCommit
-            ) {
-                st = st.bold();
-            }
-            spans.push(Span::styled(ch.to_string(), st));
+            spans.push(Span::styled(
+                ch.to_string(),
+                Style::new().fg(color(cell.color)),
+            ));
         }
         let used = cells.len().min(graph_w);
         spans.push(Span::raw(" ".repeat(graph_w - used + 1)));
@@ -238,10 +234,7 @@ fn ref_style(name: &str, kind: RefKind, lane_color: usize) -> (String, Style) {
                 .fg(color(lane_color))
                 .add_modifier(Modifier::ITALIC | Modifier::DIM),
         ),
-        RefKind::Tag => (
-            format!("<{name}>"),
-            Style::new().fg(Color::LightYellow).bold(),
-        ),
+        RefKind::Tag => (format!("<{name}>"), Style::new().fg(Color::LightYellow)),
     }
 }
 
