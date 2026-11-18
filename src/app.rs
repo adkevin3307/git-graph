@@ -22,9 +22,20 @@ const HSTEP: usize = 4;
 
 pub enum Mode {
     Normal,
-    Search { input: String },
-    Branches { filter: String, selected: usize },
-    Confirm { prompt: String, action: Pending },
+    /// Search popup: live list of matching commits.
+    Search {
+        input: String,
+        results: Vec<usize>,
+        selected: usize,
+    },
+    Branches {
+        filter: String,
+        selected: usize,
+    },
+    Confirm {
+        prompt: String,
+        action: Pending,
+    },
     Help,
 }
 
@@ -326,26 +337,70 @@ impl App {
         match &mut self.mode {
             Mode::Normal => self.key_normal(key),
             Mode::Help => self.mode = Mode::Normal,
-            Mode::Search { input } => match key.code {
-                KeyCode::Esc => self.mode = Mode::Normal,
-                KeyCode::Enter => {
-                    self.query = std::mem::take(input);
-                    self.mode = Mode::Normal;
-                    self.recompute_matches();
-                    if self.matches.is_empty() {
-                        if !self.query.is_empty() {
-                            self.status = format!("No match for '{}'", self.query);
-                        }
-                    } else {
-                        self.next_match(true, true);
+            Mode::Search {
+                input,
+                results,
+                selected,
+            } => {
+                let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+                let last = results.len().saturating_sub(1);
+                let mut edited = false;
+                match key.code {
+                    KeyCode::Esc => self.mode = Mode::Normal,
+                    KeyCode::Down | KeyCode::Tab => *selected = (*selected + 1).min(last),
+                    KeyCode::Up | KeyCode::BackTab => *selected = selected.saturating_sub(1),
+                    KeyCode::Char('n') if ctrl => *selected = (*selected + 1).min(last),
+                    KeyCode::Char('p') if ctrl => *selected = selected.saturating_sub(1),
+                    KeyCode::PageDown => *selected = (*selected + 10).min(last),
+                    KeyCode::PageUp => *selected = selected.saturating_sub(10),
+                    KeyCode::Char('u') if ctrl => {
+                        input.clear();
+                        edited = true;
                     }
+                    KeyCode::Backspace => {
+                        input.pop();
+                        edited = true;
+                    }
+                    KeyCode::Char(c) if !ctrl => {
+                        input.push(c);
+                        edited = true;
+                    }
+                    KeyCode::Enter => {
+                        let target = results.get(*selected).copied();
+                        self.query = std::mem::take(input);
+                        self.matches = std::mem::take(results);
+                        self.mode = Mode::Normal;
+                        match target {
+                            Some(i) => {
+                                self.focus = Focus::Graph;
+                                self.diff = None;
+                                self.select(i);
+                                let pos = self.matches.iter().position(|&m| m == i).unwrap() + 1;
+                                self.status = format!(
+                                    "[{pos}/{}] '{}'  (n/N: next/prev)",
+                                    self.matches.len(),
+                                    self.query
+                                );
+                            }
+                            None if !self.query.is_empty() => {
+                                self.status = format!("No match for '{}'", self.query)
+                            }
+                            None => {}
+                        }
+                    }
+                    _ => {}
                 }
-                KeyCode::Backspace => {
-                    input.pop();
+                if edited
+                    && let Mode::Search {
+                        input,
+                        results,
+                        selected,
+                    } = &mut self.mode
+                {
+                    *results = find_matches(&self.snap, input);
+                    *selected = 0;
                 }
-                KeyCode::Char(c) => input.push(c),
-                _ => {}
-            },
+            }
             Mode::Branches { filter, selected } => {
                 let visible = branch_matches(&self.snap, filter);
                 match key.code {
@@ -465,8 +520,11 @@ impl App {
                 }
             }
             KeyCode::Char('/') => {
+                // Reopen with the previous query so it can be refined.
                 self.mode = Mode::Search {
-                    input: String::new(),
+                    input: self.query.clone(),
+                    results: find_matches(&self.snap, &self.query),
+                    selected: 0,
                 }
             }
             KeyCode::Char('n') => self.next_match(true, false),
@@ -749,25 +807,7 @@ impl App {
     }
 
     pub fn recompute_matches(&mut self) {
-        self.matches.clear();
-        if self.query.is_empty() {
-            return;
-        }
-        let q = self.query.to_lowercase();
-        for (i, c) in self.snap.commits.iter().enumerate() {
-            let hit = c.summary.to_lowercase().contains(&q)
-                || c.author.to_lowercase().contains(&q)
-                || c.email.to_lowercase().contains(&q)
-                || c.id.to_string().starts_with(&q)
-                || self
-                    .snap
-                    .refs
-                    .get(&c.id)
-                    .is_some_and(|ls| ls.iter().any(|l| l.name.to_lowercase().contains(&q)));
-            if hit {
-                self.matches.push(i);
-            }
-        }
+        self.matches = find_matches(&self.snap, &self.query);
     }
 
     fn next_match(&mut self, forward: bool, inclusive: bool) {
@@ -799,6 +839,30 @@ impl App {
         let pos = self.matches.iter().position(|&i| i == target).unwrap() + 1;
         self.status = format!("[{pos}/{}] '{}'", self.matches.len(), self.query);
     }
+}
+
+/// Commits whose message, author, email, hash prefix or ref names contain
+/// `query` (case-insensitive), in graph order.
+pub fn find_matches(snap: &Snapshot, query: &str) -> Vec<usize> {
+    if query.is_empty() {
+        return Vec::new();
+    }
+    let q = query.to_lowercase();
+    snap.commits
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| {
+            c.summary.to_lowercase().contains(&q)
+                || c.author.to_lowercase().contains(&q)
+                || c.email.to_lowercase().contains(&q)
+                || c.id.to_string().starts_with(&q)
+                || snap
+                    .refs
+                    .get(&c.id)
+                    .is_some_and(|ls| ls.iter().any(|l| l.name.to_lowercase().contains(&q)))
+        })
+        .map(|(i, _)| i)
+        .collect()
 }
 
 pub fn branch_matches(snap: &Snapshot, filter: &str) -> Vec<usize> {
