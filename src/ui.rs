@@ -51,8 +51,8 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             Layout::vertical([Constraint::Percentage(60), Constraint::Percentage(40)]).areas(main);
         (a, b)
     };
-    if app.diff.is_some() && app.focus == Focus::Diff {
-        // Focused diff: use the whole area, hiding commit details and files.
+    if app.diff_fullscreen() {
+        // Maximized diff (z): use the whole area, hiding commit details and files.
         app.files_area = Rect::default();
         draw_diff(f, app, main);
     } else {
@@ -479,6 +479,14 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
                     ("h/l ←/→", "scroll sideways"),
                     ("0/$", "line start/end"),
                     ("[ ]", "prev/next file"),
+                    (
+                        "z",
+                        if app.diff_maximized {
+                            "restore"
+                        } else {
+                            "maximize"
+                        },
+                    ),
                     ("tab", "files"),
                     ("esc", "back"),
                     ("?", "help"),
@@ -544,7 +552,8 @@ fn draw_help(f: &mut Frame) {
         ("enter / l", "open files / file diff"),
         ("D", "diff of the whole commit"),
         ("Diff (replaces the graph)", ""),
-        ("tab", "diff (full width) ↔ files (details shown)"),
+        ("tab", "switch focus diff ↔ files"),
+        ("z", "maximize / restore the diff"),
         ("[ ]", "previous / next file"),
         ("j/k (files)", "switch file, diff follows"),
         ("h/l ←/→", "scroll diff sideways (H/L: half page)"),

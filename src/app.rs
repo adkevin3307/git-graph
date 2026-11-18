@@ -69,6 +69,8 @@ pub struct App {
     pub files_offset: usize,
     /// Where the diff panel was last drawn (inner text area).
     pub diff_area: Rect,
+    /// Diff fills the whole area, hiding commit details and files (toggle: z).
+    pub diff_maximized: bool,
 }
 
 impl App {
@@ -96,6 +98,7 @@ impl App {
             files_area: Rect::default(),
             files_offset: 0,
             diff_area: Rect::default(),
+            diff_maximized: false,
         };
         if let Some(i) = app.snap.head.and_then(|h| app.snap.index.get(&h).copied()) {
             app.select(i);
@@ -230,7 +233,13 @@ impl App {
 
     fn close_diff(&mut self) {
         self.diff = None;
+        self.diff_maximized = false;
         self.focus = Focus::Files;
+    }
+
+    /// Whether the diff currently fills the whole area.
+    pub fn diff_fullscreen(&self) -> bool {
+        self.diff.is_some() && self.diff_maximized && self.focus == Focus::Diff
     }
 
     fn move_by(&mut self, delta: isize) {
@@ -372,17 +381,18 @@ impl App {
                         self.focus = Focus::Files;
                     }
                 }
-                // Open unfocused: details and file list stay visible.
                 Focus::Files | Focus::Diff => {
                     self.open_diff(Some(self.file_selected));
-                    self.focus = Focus::Files;
+                    if self.diff.is_some() {
+                        self.focus = Focus::Diff;
+                    }
                 }
             },
             KeyCode::Esc | KeyCode::Char('h') | KeyCode::Left => self.focus = Focus::Graph,
             KeyCode::Char('D') => {
                 self.open_diff(None);
                 if self.diff.is_some() {
-                    self.focus = Focus::Files;
+                    self.focus = Focus::Diff;
                 }
             }
             KeyCode::Char('/') => {
@@ -421,10 +431,17 @@ impl App {
         match key.code {
             KeyCode::Tab | KeyCode::BackTab => {
                 self.focus = if self.focus == Focus::Diff {
+                    // The file list must be visible to use it.
+                    self.diff_maximized = false;
                     Focus::Files
                 } else {
                     Focus::Diff
                 };
+                return;
+            }
+            KeyCode::Char('z') => {
+                self.diff_maximized = !self.diff_maximized;
+                self.focus = Focus::Diff;
                 return;
             }
             KeyCode::Esc | KeyCode::Char('q') => return self.close_diff(),
