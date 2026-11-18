@@ -51,13 +51,19 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             Layout::vertical([Constraint::Percentage(60), Constraint::Percentage(40)]).areas(main);
         (a, b)
     };
-    // A file diff takes the graph's place; commit details and files stay visible.
-    if app.diff.is_some() {
-        draw_diff(f, app, list);
+    if app.diff.is_some() && app.focus == Focus::Diff {
+        // Focused diff: use the whole area, hiding commit details and files.
+        app.files_area = Rect::default();
+        draw_diff(f, app, main);
     } else {
-        draw_graph(f, app, list);
+        // Otherwise a diff takes the graph's place beside the details and files.
+        if app.diff.is_some() {
+            draw_diff(f, app, list);
+        } else {
+            draw_graph(f, app, list);
+        }
+        draw_side(f, app, side, wide);
     }
-    draw_side(f, app, side, wide);
     draw_footer(f, app, footer);
 
     match &app.mode {
@@ -423,6 +429,15 @@ fn draw_diff(f: &mut Frame, app: &mut App, area: Rect) {
     f.render_widget(block, area);
     app.page = inner.height.max(1) as usize;
     app.diff_area = inner;
+    // The panel width changes with focus; keep the scroll within the new bounds.
+    let max_h = d.max_width.saturating_sub(inner.width as usize);
+    let d = match app.diff.as_mut() {
+        Some(d) => {
+            d.hscroll = d.hscroll.min(max_h);
+            &*d
+        }
+        None => return,
+    };
     let lines: Vec<Line> = d
         .lines
         .iter()
@@ -529,7 +544,7 @@ fn draw_help(f: &mut Frame) {
         ("enter / l", "open files / file diff"),
         ("D", "diff of the whole commit"),
         ("Diff (replaces the graph)", ""),
-        ("tab", "switch focus diff ↔ files"),
+        ("tab", "diff (full width) ↔ files (details shown)"),
         ("[ ]", "previous / next file"),
         ("j/k (files)", "switch file, diff follows"),
         ("h/l ←/→", "scroll diff sideways (H/L: half page)"),
