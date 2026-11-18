@@ -26,7 +26,7 @@ struct Cli {
     /// Maximum number of commits to load.
     #[arg(short = 'n', long, default_value_t = 20_000)]
     limit: usize,
-    /// Branch pinned to the leftmost lane (default: main, master, trunk, develop).
+    /// Trunk branch: leftmost column and color 0 (default: main, master, trunk, develop).
     #[arg(short, long)]
     main: Option<String>,
     /// Give every branch connector its own row instead of sharing free
