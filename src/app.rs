@@ -67,6 +67,8 @@ pub struct App {
     pub diff: Option<DiffView>,
     pub query: String,
     pub matches: Vec<usize>,
+    /// Whether search matches are highlighted in the commit list (toggle: s).
+    pub search_highlight: bool,
     pub status: String,
     pub quit: bool,
     /// Height of the graph list in rows, updated on draw.
@@ -105,6 +107,7 @@ impl App {
             diff: None,
             query: String::new(),
             matches: Vec::new(),
+            search_highlight: true,
             status: String::new(),
             quit: false,
             page: 20,
@@ -369,6 +372,7 @@ impl App {
                         let target = results.get(*selected).copied();
                         self.query = std::mem::take(input);
                         self.matches = std::mem::take(results);
+                        self.search_highlight = true;
                         self.mode = Mode::Normal;
                         match target {
                             Some(i) => {
@@ -490,13 +494,7 @@ impl App {
             }
             KeyCode::Home | KeyCode::Char('g') => self.move_by(isize::MIN / 2),
             KeyCode::End | KeyCode::Char('G') => self.move_by(isize::MAX / 2),
-            KeyCode::Tab | KeyCode::BackTab => {
-                self.focus = if self.focus == Focus::Graph {
-                    Focus::Files
-                } else {
-                    Focus::Graph
-                };
-            }
+            KeyCode::Char('s') => self.toggle_search_highlight(),
             KeyCode::Right => self.focus_right(),
             KeyCode::Left => self.focus_left(),
             KeyCode::Enter | KeyCode::Char('l') => match self.focus {
@@ -556,16 +554,8 @@ impl App {
     /// the diff panel or the file list beside it.
     fn key_diff(&mut self, key: KeyEvent, ctrl: bool, half: isize) {
         match key.code {
-            KeyCode::Tab | KeyCode::BackTab => {
-                self.focus = if self.focus == Focus::Diff {
-                    // The file list must be visible to use it.
-                    self.diff_maximized = false;
-                    Focus::Files
-                } else {
-                    Focus::Diff
-                };
-                return;
-            }
+            KeyCode::Tab => return self.cycle_diff_file(1),
+            KeyCode::BackTab => return self.cycle_diff_file(-1),
             KeyCode::Char('z') => {
                 self.diff_maximized = !self.diff_maximized;
                 self.focus = Focus::Diff;
@@ -640,6 +630,20 @@ impl App {
         if j < n {
             self.goto_diff_file(j);
         }
+    }
+
+    /// Next/previous file in the diff, wrapping around at either end.
+    fn cycle_diff_file(&mut self, delta: isize) {
+        let n = self.detail.as_ref().map_or(0, |d| d.files.len()) as isize;
+        if n == 0 {
+            return;
+        }
+        let j = match self.diff.as_ref().and_then(|d| d.file_index) {
+            Some(i) => (i as isize + delta).rem_euclid(n) as usize,
+            // From the whole-commit diff, start at the highlighted file.
+            None => self.file_selected,
+        };
+        self.goto_diff_file(j);
     }
 
     fn goto_diff_file(&mut self, j: usize) {
@@ -806,6 +810,19 @@ impl App {
         self.status = format!("Copied {hash}");
     }
 
+    fn toggle_search_highlight(&mut self) {
+        if self.query.is_empty() {
+            self.status = "No search (press /)".into();
+            return;
+        }
+        self.search_highlight = !self.search_highlight;
+        self.status = format!(
+            "Search highlight {} for '{}'",
+            if self.search_highlight { "on" } else { "off" },
+            self.query
+        );
+    }
+
     pub fn recompute_matches(&mut self) {
         self.matches = find_matches(&self.snap, &self.query);
     }
@@ -835,6 +852,7 @@ impl App {
                 .unwrap_or(*self.matches.last().unwrap())
         };
         self.focus = Focus::Graph;
+        self.search_highlight = true;
         self.select(target);
         let pos = self.matches.iter().position(|&i| i == target).unwrap() + 1;
         self.status = format!("[{pos}/{}] '{}'", self.matches.len(), self.query);

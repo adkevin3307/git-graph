@@ -178,7 +178,8 @@ fn draw_graph(f: &mut Frame, app: &mut App, area: Rect) {
         };
         let c = &app.snap.commits[i];
         let selected = i == app.selected;
-        let is_match = !app.query.is_empty() && app.matches.binary_search(&i).is_ok();
+        let is_match =
+            app.search_highlight && !app.query.is_empty() && app.matches.binary_search(&i).is_ok();
         let hash_style = if is_match {
             Style::new().fg(Color::Black).bg(Color::Yellow)
         } else {
@@ -216,7 +217,8 @@ fn draw_graph(f: &mut Frame, app: &mut App, area: Rect) {
         if room >= 12 {
             let summary = truncate(&c.summary, room);
             let pad = room - summary.chars().count();
-            spans.push(Span::styled(summary, summary_style));
+            let q = if is_match { app.query.as_str() } else { "" };
+            spans.extend(highlight(&summary, q, summary_style));
             spans.push(Span::raw(" ".repeat(pad)));
             spans.push(Span::styled(meta, Style::new().fg(DIM)));
         } else {
@@ -467,7 +469,7 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
                     ("j/k", "scroll"),
                     ("h/l", "scroll sideways"),
                     ("0/$", "line start/end"),
-                    ("[ ]", "prev/next file"),
+                    ("tab", "next file"),
                     (
                         "z",
                         if app.diff_maximized {
@@ -490,7 +492,7 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
                 ]
             } else if app.diff.is_some() {
                 &[
-                    ("j/k", "switch file"),
+                    ("j/k tab", "switch file"),
                     ("enter/l", "focus diff"),
                     ("←/→", "panes"),
                     ("esc", "back"),
@@ -544,14 +546,14 @@ fn draw_help(f: &mut Frame) {
         ("Search", ""),
         ("/", "search popup: message, author, hash, refs"),
         ("n / N", "next / previous match"),
+        ("s", "toggle search highlight"),
         ("Panes", ""),
         ("← / →", "previous / next pane: graph, commit, files, diff"),
-        ("tab", "switch focus graph ↔ files (diff ↔ files)"),
         ("j/k (commit)", "scroll the commit details"),
         ("enter / l", "open files / file diff"),
         ("D", "diff of the whole commit"),
         ("Diff (replaces the graph)", ""),
-        ("tab", "switch focus diff ↔ files"),
+        ("tab / shift-tab", "next / previous file (wraps around)"),
         ("z", "maximize / restore the diff"),
         ("[ ]", "previous / next file"),
         ("j/k (files)", "switch file, diff follows"),
@@ -714,7 +716,7 @@ fn draw_search(f: &mut Frame, app: &App, input: &str, results: &[usize], selecte
             let room = text_w.saturating_sub(used + meta.chars().count());
             let summary = truncate(&c.summary, room);
             let pad = room.saturating_sub(summary.chars().count());
-            spans.extend(highlight(&summary, input));
+            spans.extend(highlight(&summary, input, Style::new()));
             spans.push(Span::raw(" ".repeat(pad)));
             spans.push(Span::styled(meta, Style::new().fg(DIM)));
             ListItem::new(Line::from(spans))
@@ -735,12 +737,12 @@ fn draw_search(f: &mut Frame, app: &App, input: &str, results: &[usize], selecte
 }
 
 /// Split `text` into spans, emphasizing case-insensitive matches of `query`.
-fn highlight(text: &str, query: &str) -> Vec<Span<'static>> {
+fn highlight(text: &str, query: &str, base: Style) -> Vec<Span<'static>> {
     let lower = text.to_lowercase();
     let q = query.to_lowercase();
     // Byte offsets only line up when lowercasing keeps lengths (e.g. ASCII).
     if q.is_empty() || lower.len() != text.len() {
-        return vec![Span::raw(text.to_string())];
+        return vec![Span::styled(text.to_string(), base)];
     }
     let mut spans = Vec::new();
     let mut pos = 0;
@@ -750,14 +752,14 @@ fn highlight(text: &str, query: &str) -> Vec<Span<'static>> {
         if !text.is_char_boundary(start) || !text.is_char_boundary(end) {
             break;
         }
-        spans.push(Span::raw(text[pos..start].to_string()));
+        spans.push(Span::styled(text[pos..start].to_string(), base));
         spans.push(Span::styled(
             text[start..end].to_string(),
             Style::new().fg(Color::Black).bg(Color::Yellow),
         ));
         pos = end;
     }
-    spans.push(Span::raw(text[pos..].to_string()));
+    spans.push(Span::styled(text[pos..].to_string(), base));
     spans
 }
 
