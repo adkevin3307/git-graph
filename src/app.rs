@@ -10,6 +10,8 @@ use crate::repo::{self, CommitDetail, DiffLine, LoadOptions, RefKind, Snapshot};
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
     Graph,
+    /// Commit details (scrollable).
+    Commit,
     Files,
     /// The diff panel (shown in place of the commit graph).
     Diff,
@@ -71,6 +73,9 @@ pub struct App {
     pub diff_area: Rect,
     /// Diff fills the whole area, hiding commit details and files (toggle: z).
     pub diff_maximized: bool,
+    /// Scroll offset of the commit details pane, and where it was drawn.
+    pub commit_scroll: u16,
+    pub commit_area: Rect,
 }
 
 impl App {
@@ -99,6 +104,8 @@ impl App {
             files_offset: 0,
             diff_area: Rect::default(),
             diff_maximized: false,
+            commit_scroll: 0,
+            commit_area: Rect::default(),
         };
         if let Some(i) = app.snap.head.and_then(|h| app.snap.index.get(&h).copied()) {
             app.select(i);
@@ -154,6 +161,7 @@ impl App {
     fn load_detail(&mut self) {
         self.file_selected = 0;
         self.files_offset = 0;
+        self.commit_scroll = 0;
         self.detail = self
             .snap
             .commits
@@ -191,6 +199,9 @@ impl App {
                     self.open_diff(Some(i));
                     self.focus = Focus::Files;
                 }
+            }
+            MouseEventKind::Down(_) if inside(self.commit_area, ev.column, ev.row, 0) => {
+                self.focus = Focus::Commit;
             }
             MouseEventKind::Down(_)
                 if self.diff.is_some() && inside(self.diff_area, ev.column, ev.row, 0) =>
@@ -242,9 +253,56 @@ impl App {
         self.diff.is_some() && self.diff_maximized && self.focus == Focus::Diff
     }
 
+    /// → : move focus to the next pane (graph → commit → files → diff),
+    /// opening the selected file's diff when entering the diff pane.
+    fn focus_right(&mut self) {
+        self.focus = match self.focus {
+            Focus::Graph => Focus::Commit,
+            Focus::Commit => Focus::Files,
+            Focus::Files | Focus::Diff => {
+                if self.diff.is_none() {
+                    self.open_diff(Some(self.file_selected));
+                }
+                if self.diff.is_some() {
+                    Focus::Diff
+                } else {
+                    Focus::Files
+                }
+            }
+        };
+    }
+
+    /// ← : move focus to the previous pane (diff → files → commit → graph).
+    /// Going back to the graph closes the diff that replaced it.
+    fn focus_left(&mut self) {
+        self.focus = match self.focus {
+            Focus::Diff => {
+                self.diff_maximized = false;
+                Focus::Files
+            }
+            Focus::Files => Focus::Commit,
+            Focus::Commit | Focus::Graph => {
+                self.diff = None;
+                self.diff_maximized = false;
+                Focus::Graph
+            }
+        };
+    }
+
+    fn scroll_commit(&mut self, delta: isize) {
+        let lines = self
+            .detail
+            .as_ref()
+            .map_or(0, |d| d.message.lines().count())
+            + 8;
+        let v = (self.commit_scroll as isize + delta).clamp(0, lines as isize - 1);
+        self.commit_scroll = v as u16;
+    }
+
     fn move_by(&mut self, delta: isize) {
         match self.focus {
             Focus::Diff => {}
+            Focus::Commit => self.scroll_commit(delta),
             Focus::Graph => self.select(self.selected.saturating_add_signed(delta)),
             Focus::Files => {
                 let n = self.detail.as_ref().map_or(0, |d| d.files.len());
@@ -375,8 +433,10 @@ impl App {
                     Focus::Graph
                 };
             }
-            KeyCode::Enter | KeyCode::Char('l') | KeyCode::Right => match self.focus {
-                Focus::Graph => {
+            KeyCode::Right => self.focus_right(),
+            KeyCode::Left => self.focus_left(),
+            KeyCode::Enter | KeyCode::Char('l') => match self.focus {
+                Focus::Graph | Focus::Commit => {
                     if self.detail.as_ref().is_some_and(|d| !d.files.is_empty()) {
                         self.focus = Focus::Files;
                     }
@@ -388,7 +448,7 @@ impl App {
                     }
                 }
             },
-            KeyCode::Esc | KeyCode::Char('h') | KeyCode::Left => self.focus = Focus::Graph,
+            KeyCode::Esc | KeyCode::Char('h') => self.focus = Focus::Graph,
             KeyCode::Char('D') => {
                 self.open_diff(None);
                 if self.diff.is_some() {
@@ -444,7 +504,10 @@ impl App {
                 self.focus = Focus::Diff;
                 return;
             }
-            KeyCode::Esc | KeyCode::Char('q') => return self.close_diff(),
+            KeyCode::Right => return self.focus_right(),
+            KeyCode::Left => return self.focus_left(),
+            KeyCode::Esc => return self.close_diff(),
+            KeyCode::Char('q') => self.quit = true,
             KeyCode::Char('c') if ctrl => self.quit = true,
             KeyCode::Char('?') => self.mode = Mode::Help,
             KeyCode::Char('y') => self.yank(),
@@ -459,8 +522,17 @@ impl App {
                 KeyCode::Up | KeyCode::Char('k') => self.step_diff_file(-1),
                 KeyCode::Home | KeyCode::Char('g') if n > 0 => self.goto_diff_file(0),
                 KeyCode::End | KeyCode::Char('G') if n > 0 => self.goto_diff_file(n - 1),
-                KeyCode::Enter | KeyCode::Char('l') | KeyCode::Right => self.focus = Focus::Diff,
-                KeyCode::Char('h') | KeyCode::Left => self.close_diff(),
+                KeyCode::Enter | KeyCode::Char('l') => self.focus = Focus::Diff,
+                KeyCode::Char('h') => self.close_diff(),
+                _ => {}
+            }
+            return;
+        }
+        if self.focus == Focus::Commit {
+            match key.code {
+                KeyCode::Down | KeyCode::Char('j') => self.scroll_commit(1),
+                KeyCode::Up | KeyCode::Char('k') => self.scroll_commit(-1),
+                KeyCode::Home | KeyCode::Char('g') => self.commit_scroll = 0,
                 _ => {}
             }
             return;
@@ -481,8 +553,8 @@ impl App {
             KeyCode::End | KeyCode::Char('G') => d.scroll = max,
             KeyCode::Char('J') => self.step_diff_file(1),
             KeyCode::Char('K') => self.step_diff_file(-1),
-            KeyCode::Left | KeyCode::Char('h') => self.hscroll(-(HSTEP as isize)),
-            KeyCode::Right | KeyCode::Char('l') => self.hscroll(HSTEP as isize),
+            KeyCode::Char('h') => self.hscroll(-(HSTEP as isize)),
+            KeyCode::Char('l') => self.hscroll(HSTEP as isize),
             KeyCode::Char('H') => self.hscroll(-wide),
             KeyCode::Char('L') => self.hscroll(wide),
             KeyCode::Char('0') => self.hscroll(isize::MIN / 2),

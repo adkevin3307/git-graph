@@ -54,6 +54,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     if app.diff_fullscreen() {
         // Maximized diff (z): use the whole area, hiding commit details and files.
         app.files_area = Rect::default();
+        app.commit_area = Rect::default();
         draw_diff(f, app, main);
     } else {
         // Otherwise a diff takes the graph's place beside the details and files.
@@ -349,9 +350,11 @@ fn draw_side(f: &mut Frame, app: &mut App, area: Rect, wide: bool) {
     f.render_widget(
         Paragraph::new(lines)
             .wrap(Wrap { trim: false })
-            .block(panel("Commit", false)),
+            .scroll((app.commit_scroll, 0))
+            .block(panel("Commit", app.focus == Focus::Commit)),
         info,
     );
+    app.commit_area = info;
 
     draw_files(f, app, files, app.focus == Focus::Files);
 }
@@ -476,7 +479,7 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
             let keys: &[(&str, &str)] = if app.diff.is_some() && app.focus == Focus::Diff {
                 &[
                     ("j/k", "scroll"),
-                    ("h/l ←/→", "scroll sideways"),
+                    ("h/l", "scroll sideways"),
                     ("0/$", "line start/end"),
                     ("[ ]", "prev/next file"),
                     (
@@ -487,22 +490,30 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
                             "maximize"
                         },
                     ),
-                    ("tab", "files"),
+                    ("←/→", "panes"),
                     ("esc", "back"),
                     ("?", "help"),
+                ]
+            } else if app.focus == Focus::Commit {
+                &[
+                    ("j/k", "scroll"),
+                    ("←/→", "panes"),
+                    ("esc", "back"),
+                    ("?", "help"),
+                    ("q", "quit"),
                 ]
             } else if app.diff.is_some() {
                 &[
                     ("j/k", "switch file"),
                     ("enter/l", "focus diff"),
-                    ("tab", "diff"),
+                    ("←/→", "panes"),
                     ("esc", "back"),
                     ("?", "help"),
                 ]
             } else {
                 &[
                     ("j/k", "move"),
-                    ("tab", "focus"),
+                    ("←/→", "panes"),
                     ("enter", "open"),
                     ("/", "search"),
                     ("b", "branches"),
@@ -547,8 +558,10 @@ fn draw_help(f: &mut Frame) {
         ("Search", ""),
         ("/", "search message, author, hash, refs"),
         ("n / N", "next / previous match"),
-        ("Details", ""),
-        ("tab", "switch focus commits ↔ files"),
+        ("Panes", ""),
+        ("← / →", "previous / next pane: graph, commit, files, diff"),
+        ("tab", "switch focus graph ↔ files (diff ↔ files)"),
+        ("j/k (commit)", "scroll the commit details"),
         ("enter / l", "open files / file diff"),
         ("D", "diff of the whole commit"),
         ("Diff (replaces the graph)", ""),
@@ -556,9 +569,9 @@ fn draw_help(f: &mut Frame) {
         ("z", "maximize / restore the diff"),
         ("[ ]", "previous / next file"),
         ("j/k (files)", "switch file, diff follows"),
-        ("h/l ←/→", "scroll diff sideways (H/L: half page)"),
+        ("h / l", "scroll diff sideways (H/L: half page)"),
         ("0 / $", "scroll to line start / end"),
-        ("esc / q", "close diff, back to the graph"),
+        ("esc", "close diff, back to the graph"),
         ("Actions", ""),
         ("o", "checkout branch at commit (or detach)"),
         ("y", "copy commit hash (OSC 52)"),
