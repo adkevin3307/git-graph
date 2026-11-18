@@ -15,20 +15,20 @@ use crate::repo::{DiffKind, RefKind};
 // e.g. "bright blue" in Windows Terminal) chosen to stay legible on dark
 // backgrounds, including the selected-row highlight.
 const PALETTE: [Color; crate::graph::PALETTE_SIZE] = [
-    Color::Rgb(110, 175, 255), // blue (primary branch)
-    Color::Rgb(120, 220, 120), // green
-    Color::Rgb(235, 135, 235), // magenta
-    Color::Rgb(240, 210, 100), // yellow
-    Color::Rgb(100, 215, 230), // cyan
-    Color::Rgb(255, 125, 125), // red
-    Color::Rgb(255, 170, 90),  // orange
-    Color::Rgb(185, 155, 255), // purple
-    Color::Rgb(255, 155, 205), // pink
-    Color::Rgb(190, 235, 100), // lime
-    Color::Rgb(220, 190, 140), // tan
-    Color::Rgb(70, 210, 185),  // teal
+    Color::Rgb(94, 149, 217),  // blue (primary branch)
+    Color::Rgb(102, 187, 102), // green
+    Color::Rgb(200, 115, 200), // magenta
+    Color::Rgb(204, 178, 85),  // yellow
+    Color::Rgb(85, 183, 196),  // cyan
+    Color::Rgb(217, 106, 106), // red
+    Color::Rgb(217, 144, 76),  // orange
+    Color::Rgb(157, 132, 217), // purple
+    Color::Rgb(217, 132, 174), // pink
+    Color::Rgb(162, 200, 85),  // lime
+    Color::Rgb(187, 162, 119), // tan
+    Color::Rgb(60, 178, 157),  // teal
 ];
-const TAG: Color = Color::Rgb(250, 225, 130);
+const TAG: Color = Color::Rgb(212, 191, 110);
 const ACCENT: Color = Color::Cyan;
 const DIM: Color = Color::DarkGray;
 
