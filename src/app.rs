@@ -372,18 +372,17 @@ impl App {
                         self.focus = Focus::Files;
                     }
                 }
+                // Open unfocused: details and file list stay visible.
                 Focus::Files | Focus::Diff => {
                     self.open_diff(Some(self.file_selected));
-                    if self.diff.is_some() {
-                        self.focus = Focus::Diff;
-                    }
+                    self.focus = Focus::Files;
                 }
             },
             KeyCode::Esc | KeyCode::Char('h') | KeyCode::Left => self.focus = Focus::Graph,
             KeyCode::Char('D') => {
                 self.open_diff(None);
                 if self.diff.is_some() {
-                    self.focus = Focus::Diff;
+                    self.focus = Focus::Files;
                 }
             }
             KeyCode::Char('/') => {
