@@ -77,7 +77,26 @@ This installs a `git-graph` binary into `~/.cargo/bin`. Note that another,
 unrelated tool on crates.io is also called `git-graph`; if you have it
 installed, the two binaries will clash.
 
-To just build and run from the checkout:
+### Build an executable only
+
+```sh
+cargo build --release
+```
+
+The binary is written to `target/release/git-graph` (about 3 MB). Run it
+directly, or copy it anywhere on your `PATH`:
+
+```sh
+./target/release/git-graph ~/some/repo
+cp target/release/git-graph ~/.local/bin/
+```
+
+libgit2 is compiled into the binary; at runtime it only needs zlib and the C
+library, which practically every Linux system has. A binary built on one
+machine runs on others with the same architecture and the same or a newer
+glibc.
+
+To build and run in one step from the checkout:
 
 ```sh
 cargo run --release -- [PATH]
