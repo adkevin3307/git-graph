@@ -14,7 +14,7 @@
 //! * A lane freed on a row is never reused on that same row, which avoids
 //!   ambiguous glyphs where one line ends and another starts.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 pub type Id = git2::Oid;
 
@@ -25,7 +25,7 @@ const RIGHT: u8 = 8;
 
 /// Number of colors the layout cycles through. Color 0 is reserved for the
 /// primary branch.
-pub const PALETTE_SIZE: usize = 8;
+pub const PALETTE_SIZE: usize = 12;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Glyph {
@@ -98,6 +98,9 @@ struct Lane {
 pub struct Node<'a> {
     pub id: Id,
     pub parents: &'a [Id],
+    /// Fixed color for this commit (e.g. derived from its branch name).
+    /// `None` falls back to the lane's color or a rotating palette color.
+    pub color: Option<usize>,
 }
 
 #[derive(Clone, Copy)]
@@ -129,6 +132,11 @@ pub fn layout<'a>(
         };
         c
     };
+    let nodes: Vec<Node<'a>> = nodes.into_iter().collect();
+    let fixed: HashMap<Id, usize> = nodes
+        .iter()
+        .filter_map(|n| Some((n.id, n.color?)))
+        .collect();
     let mut rows = Vec::new();
 
     for node in nodes {
@@ -158,10 +166,11 @@ pub fn layout<'a>(
         if col >= lanes.len() {
             lanes.resize(col + 1, None);
         }
-        let color = match lanes[col] {
-            Some(l) => l.color,
-            None if is_primary && reserve0 => 0,
-            None => new_color(),
+        let color = match (node.color, lanes[col]) {
+            _ if is_primary && reserve0 => 0,
+            (Some(c), _) => c,
+            (None, Some(l)) => l.color,
+            (None, None) => new_color(),
         };
 
         let mut links: Vec<(usize, Link)> = Vec::new();
@@ -211,7 +220,12 @@ pub fn layout<'a>(
             if k >= lanes.len() {
                 lanes.resize(k + 1, None);
             }
-            let c = if primary_slot { 0 } else { new_color() };
+            // A forked lane leads to the merged parent, so it takes that branch's color.
+            let c = match fixed.get(&p) {
+                _ if primary_slot => 0,
+                Some(&c) => c,
+                None => new_color(),
+            };
             lanes[k] = Some(Lane {
                 target: p,
                 color: c,
@@ -348,6 +362,7 @@ mod tests {
         let nodes = commits.iter().zip(&parents).map(|((c, _), ps)| Node {
             id: id(*c),
             parents: ps,
+            color: None,
         });
         let primary: HashSet<Id> = primary.iter().map(|&p| id(p)).collect();
         layout(nodes, &primary, compact)
@@ -449,5 +464,30 @@ mod tests {
     fn compaction_never_steals_primary_lane() {
         let g = render_with(&[(8, vec![7]), (7, vec![6]), (6, vec![])], &[1], true);
         assert_eq!(g, vec!["  ●", "  ●", "  ●"]);
+    }
+
+    #[test]
+    fn fixed_colors_follow_branches() {
+        // 4 = merge(3, 2) on main; 2 is a feature commit with fixed color 5.
+        let parents: Vec<Vec<Id>> = vec![vec![id(3), id(2)], vec![id(1)], vec![id(1)], vec![]];
+        let colors = [Some(0), Some(0), Some(5), Some(0)];
+        let nodes = [4u8, 3, 2, 1]
+            .iter()
+            .zip(&parents)
+            .zip(colors)
+            .map(|((&c, ps), color)| Node {
+                id: id(c),
+                parents: ps,
+                color,
+            });
+        let primary: HashSet<Id> = [4, 3, 1].iter().map(|&p| id(p)).collect();
+        let rows = layout(nodes, &primary, false);
+        // The fork connector (─╮) toward the feature commit uses its color...
+        assert_eq!(rows[0].cells[1].color, 5);
+        assert_eq!(rows[0].cells[2].color, 5);
+        // ...as do the feature commit and the line merging back into main.
+        assert_eq!(rows[2].color, 5);
+        assert_eq!(rows[3].cells[2].color, 5);
+        assert_eq!(rows[3].color, 0);
     }
 }

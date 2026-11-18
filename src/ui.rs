@@ -18,8 +18,12 @@ const PALETTE: [Color; crate::graph::PALETTE_SIZE] = [
     Color::LightYellow,
     Color::LightCyan,
     Color::LightRed,
-    Color::Rgb(255, 165, 80),
-    Color::Rgb(170, 140, 255),
+    Color::Rgb(255, 165, 80),  // orange
+    Color::Rgb(170, 140, 255), // purple
+    Color::Rgb(255, 140, 190), // pink
+    Color::Rgb(180, 230, 90),  // lime
+    Color::Rgb(200, 170, 120), // tan
+    Color::Rgb(0, 175, 155),   // teal
 ];
 const ACCENT: Color = Color::Cyan;
 const DIM: Color = Color::DarkGray;
@@ -175,7 +179,11 @@ fn draw_graph(f: &mut Frame, app: &mut App, area: Rect) {
 
         if let Some(labels) = app.snap.refs.get(&c.id) {
             for l in labels {
-                let (text, style) = ref_style(&l.name, l.kind, row.color);
+                let (text, style) = ref_style(
+                    &l.name,
+                    l.kind,
+                    app.snap.label_color(l).unwrap_or(row.color),
+                );
                 spans.push(Span::styled(text, style));
                 spans.push(Span::raw(" "));
             }
@@ -296,10 +304,25 @@ fn draw_side(f: &mut Frame, app: &mut App, area: Rect, wide: bool) {
         }
         lines.push(Line::from(spans));
     }
+    if let Some(b) = &c.branch {
+        lines.push(Line::from(vec![
+            Span::styled("branch    ", Style::new().fg(DIM)),
+            Span::styled(
+                b.clone(),
+                Style::new().fg(color(app.snap.rows[app.selected].color)),
+            ),
+        ]));
+    }
     if let Some(labels) = app.snap.refs.get(&c.id) {
         let mut spans = vec![Span::styled("refs      ", Style::new().fg(DIM))];
         for l in labels {
-            let (t, s) = ref_style(&l.name, l.kind, app.snap.rows[app.selected].color);
+            let (t, s) = ref_style(
+                &l.name,
+                l.kind,
+                app.snap
+                    .label_color(l)
+                    .unwrap_or(app.snap.rows[app.selected].color),
+            );
             spans.push(Span::styled(t, s));
             spans.push(Span::raw(" "));
         }
@@ -530,7 +553,11 @@ fn draw_branches(f: &mut Frame, app: &App, filter: &str, selected: usize) {
                 .get(&b.target)
                 .map(|&r| app.snap.rows[r].color)
                 .unwrap_or(0);
-            let (t, s) = ref_style(&b.label.name, b.label.kind, lane_color);
+            let (t, s) = ref_style(
+                &b.label.name,
+                b.label.kind,
+                app.snap.label_color(&b.label).unwrap_or(lane_color),
+            );
             ListItem::new(Line::from(vec![
                 Span::styled(t, s),
                 Span::styled(

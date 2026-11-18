@@ -30,6 +30,8 @@ pub struct CommitInfo {
     pub email: String,
     pub time: i64,
     pub offset_min: i32,
+    /// Branch this commit is attributed to (from branch tips or merge messages).
+    pub branch: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -82,6 +84,26 @@ pub struct Snapshot {
     pub branches: Vec<BranchEntry>,
     pub index: HashMap<Oid, usize>,
     pub truncated: bool,
+    remotes: Vec<String>,
+}
+
+impl Snapshot {
+    /// Palette index for a ref label, matching the color of its branch in the
+    /// graph. `None` for tags and a detached HEAD.
+    pub fn label_color(&self, label: &RefLabel) -> Option<usize> {
+        match label.kind {
+            RefKind::Tag => None,
+            RefKind::Head if label.name == "HEAD" => None,
+            _ => Some(name_color(
+                &normalize(&label.name, &self.remotes),
+                self.primary_norm().as_deref(),
+            )),
+        }
+    }
+
+    fn primary_norm(&self) -> Option<String> {
+        self.primary.as_deref().map(|p| normalize(p, &self.remotes))
+    }
 }
 
 pub struct LoadOptions {
@@ -199,16 +221,44 @@ pub fn load(repo: &Repository, opts: &LoadOptions) -> Result<Snapshot> {
             email: author.email().unwrap_or("").to_string(),
             time: author.when().seconds(),
             offset_min: author.when().offset_minutes(),
+            branch: None,
         });
     }
     let index: HashMap<Oid, usize> = commits.iter().enumerate().map(|(i, c)| (c.id, i)).collect();
 
     // Primary branch: its first-parent chain is pinned to lane 0.
     let (primary_name, primary_set) = primary_chain(repo, opts.primary.as_deref(), &index)?;
+
+    // Attribute commits to branches so each branch keeps one color, stable
+    // across merges, rebases and restarts (the color is a hash of the name).
+    let remotes: Vec<String> = repo
+        .remotes()?
+        .iter()
+        .flatten()
+        .flatten()
+        .map(str::to_string)
+        .collect();
+    let primary_norm = primary_name.as_deref().map(|p| normalize(p, &remotes));
+    let names = assign_branches(
+        &commits,
+        &index,
+        primary_norm.as_deref(),
+        &primary_set,
+        &branches,
+        &remotes,
+    );
+    for (c, name) in commits.iter_mut().zip(names) {
+        c.branch = name;
+    }
+
     let rows = graph::layout(
         commits.iter().map(|c| Node {
             id: c.id,
             parents: &c.parents,
+            color: c
+                .branch
+                .as_deref()
+                .map(|b| name_color(b, primary_norm.as_deref())),
         }),
         &primary_set,
         opts.compact,
@@ -231,7 +281,142 @@ pub fn load(repo: &Repository, opts: &LoadOptions) -> Result<Snapshot> {
         branches,
         index,
         truncated,
+        remotes,
     })
+}
+
+/// Strip a remote prefix: `origin/feature` -> `feature`.
+fn normalize(name: &str, remotes: &[String]) -> String {
+    let name = name.strip_prefix("refs/heads/").unwrap_or(name);
+    if let Some((first, rest)) = name.split_once('/')
+        && remotes.iter().any(|r| r == first)
+        && !rest.is_empty()
+    {
+        return rest.to_string();
+    }
+    name.to_string()
+}
+
+/// Stable palette index for a branch name; the primary branch is always 0.
+pub fn name_color(name: &str, primary: Option<&str>) -> usize {
+    if primary == Some(name) {
+        return 0;
+    }
+    // FNV-1a: deterministic across runs and Rust versions.
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in name.bytes() {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    1 + (h % (graph::PALETTE_SIZE as u64 - 1)) as usize
+}
+
+/// Branch names a merge commit's message mentions:
+/// (`into` = branch merged into, `merged` = names for parents 2..).
+fn parse_merge(summary: &str) -> (Option<String>, Vec<String>) {
+    // GitHub: "Merge pull request #12 from owner/branch"
+    if let Some(rest) = summary.strip_prefix("Merge pull request #")
+        && let Some((_, from)) = rest.split_once(" from ")
+    {
+        let src = from.split_whitespace().next().unwrap_or("");
+        let branch = src.split_once('/').map_or(src, |(_, b)| b);
+        return (
+            None,
+            if branch.is_empty() {
+                vec![]
+            } else {
+                vec![branch.to_string()]
+            },
+        );
+    }
+    // Bitbucket: "Merged in feature/x (pull request #3)"
+    if let Some(rest) = summary.strip_prefix("Merged in ") {
+        let branch = rest.split_whitespace().next().unwrap_or("");
+        return (
+            None,
+            if branch.is_empty() {
+                vec![]
+            } else {
+                vec![branch.to_string()]
+            },
+        );
+    }
+    // git / GitLab: "Merge branch 'a'", "Merge branches 'a', 'b' and 'c'",
+    // "Merge remote-tracking branch 'origin/a'", optional " into 'b'" / " into b".
+    let Some(rest) = summary
+        .strip_prefix("Merge branches ")
+        .or_else(|| summary.strip_prefix("Merge branch "))
+        .or_else(|| summary.strip_prefix("Merge remote-tracking branches "))
+        .or_else(|| summary.strip_prefix("Merge remote-tracking branch "))
+    else {
+        return (None, vec![]);
+    };
+    let (head, into) = match rest.rsplit_once(" into ") {
+        Some((h, i)) => (
+            h,
+            Some(i.trim().trim_matches('\'').to_string()).filter(|s| !s.is_empty()),
+        ),
+        None => (rest, None),
+    };
+    let merged = head
+        .split('\'')
+        .skip(1)
+        .step_by(2)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect();
+    (into, merged)
+}
+
+fn assign_branches(
+    commits: &[CommitInfo],
+    index: &HashMap<Oid, usize>,
+    primary: Option<&str>,
+    primary_set: &HashSet<Oid>,
+    branches: &[BranchEntry],
+    remotes: &[String],
+) -> Vec<Option<String>> {
+    let mut names: Vec<Option<String>> = vec![None; commits.len()];
+    // Claim the first-parent chain from `start` until an attributed commit.
+    let walk = |names: &mut Vec<Option<String>>, start: Oid, name: &str| {
+        let mut cur = start;
+        while let Some(&i) = index.get(&cur) {
+            if names[i].is_some() {
+                break;
+            }
+            names[i] = Some(name.to_string());
+            match commits[i].parents.first() {
+                Some(&p) => cur = p,
+                None => break,
+            }
+        }
+    };
+
+    if let Some(p) = primary {
+        for &id in primary_set {
+            names[index[&id]] = Some(p.to_string());
+        }
+    }
+    // Branch tips: checked-out branch first, then local, then remote.
+    for b in branches {
+        walk(&mut names, b.target, &normalize(&b.label.name, remotes));
+    }
+    // Merged (possibly deleted) branches, named by merge messages, top-down.
+    for c in commits {
+        if c.parents.len() < 2 {
+            continue;
+        }
+        let (into, merged) = parse_merge(&c.summary);
+        if let Some(into) = into {
+            walk(&mut names, c.id, &normalize(&into, remotes));
+        }
+        for (k, name) in merged.iter().enumerate() {
+            if let Some(&p) = c.parents.get(k + 1) {
+                walk(&mut names, p, &normalize(name, remotes));
+            }
+        }
+    }
+    names
 }
 
 fn primary_chain(
@@ -419,5 +604,68 @@ pub fn checkout(repo: &Repository, id: Oid, branch: Option<&str>) -> Result<Stri
             repo.set_head_detached(id)?;
             Ok(format!("HEAD detached at {}", &id.to_string()[..8]))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn v(xs: &[&str]) -> Vec<String> {
+        xs.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn parses_merge_messages() {
+        assert_eq!(
+            parse_merge("Merge branch 'feature/x'"),
+            (None, v(&["feature/x"]))
+        );
+        assert_eq!(
+            parse_merge("Merge branch 'fix' into develop"),
+            (Some("develop".into()), v(&["fix"]))
+        );
+        assert_eq!(
+            parse_merge("Merge branch 'a' into 'main'"),
+            (Some("main".into()), v(&["a"]))
+        );
+        assert_eq!(
+            parse_merge("Merge branches 'a', 'b' and 'c'"),
+            (None, v(&["a", "b", "c"]))
+        );
+        assert_eq!(
+            parse_merge("Merge remote-tracking branch 'origin/dev'"),
+            (None, v(&["origin/dev"]))
+        );
+        assert_eq!(
+            parse_merge("Merge branch 'x' of github.com:o/r"),
+            (None, v(&["x"]))
+        );
+        assert_eq!(
+            parse_merge("Merge pull request #81 from git-bahn/bugfix/cargo-install"),
+            (None, v(&["bugfix/cargo-install"]))
+        );
+        assert_eq!(
+            parse_merge("Merged in feature/y (pull request #3)"),
+            (None, v(&["feature/y"]))
+        );
+        assert_eq!(parse_merge("Merge tag 'v1.0'"), (None, vec![]));
+        assert_eq!(parse_merge("Fix merge bug"), (None, vec![]));
+    }
+
+    #[test]
+    fn normalizes_remote_names() {
+        let remotes = v(&["origin", "upstream"]);
+        assert_eq!(normalize("origin/feature/x", &remotes), "feature/x");
+        assert_eq!(normalize("feature/x", &remotes), "feature/x");
+        assert_eq!(normalize("upstream/main", &remotes), "main");
+    }
+
+    #[test]
+    fn name_color_is_stable_and_reserves_primary() {
+        assert_eq!(name_color("main", Some("main")), 0);
+        let c = name_color("feature/x", Some("main"));
+        assert_eq!(c, name_color("feature/x", None));
+        assert!((1..graph::PALETTE_SIZE).contains(&c));
     }
 }
