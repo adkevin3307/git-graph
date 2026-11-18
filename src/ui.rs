@@ -347,10 +347,13 @@ fn draw_side(f: &mut Frame, app: &mut App, area: Rect, wide: bool) {
         info,
     );
 
-    // Files
-    let focused = app.focus == Focus::Files;
+    draw_files(f, app, files, app.focus == Focus::Files);
+}
+
+/// Changed-files list for the selected commit (side pane and diff view).
+fn draw_files(f: &mut Frame, app: &mut App, area: Rect, focused: bool) {
     let Some(d) = &app.detail else {
-        f.render_widget(panel("Files", focused), files);
+        f.render_widget(panel("Files", focused), area);
         return;
     };
     let (adds, dels): (usize, usize) = d
@@ -395,13 +398,33 @@ fn draw_side(f: &mut Frame, app: &mut App, area: Rect, wide: bool) {
             Color::Rgb(35, 38, 45)
         }))
         .highlight_symbol(if focused { "▶ " } else { "  " });
-    let mut state = ListState::default().with_selected(Some(app.file_selected));
-    f.render_stateful_widget(list, files, &mut state);
+    // In the whole-commit diff no single file is current.
+    let selected = match &app.diff {
+        Some(diff) => diff.file_index,
+        None => Some(app.file_selected),
+    };
+    let mut state = ListState::default()
+        .with_selected(selected)
+        .with_offset(app.files_offset);
+    f.render_stateful_widget(list, area, &mut state);
+    app.files_offset = state.offset();
+    app.files_area = area;
 }
 
 fn draw_diff(f: &mut Frame, app: &mut App, area: Rect) {
+    // File list on the left (when enabled and there is room), diff on the right.
+    let area = if app.show_diff_files && area.width >= 70 {
+        let w = (area.width * 3 / 10).clamp(28, 50);
+        let [files, diff] =
+            Layout::horizontal([Constraint::Length(w), Constraint::Min(20)]).areas(area);
+        draw_files(f, app, files, app.diff_files_focus);
+        diff
+    } else {
+        app.files_area = Rect::default();
+        area
+    };
     let Some(d) = &app.diff else { return };
-    let block = panel(&d.title, true);
+    let block = panel(&d.title, !(app.diff_files_focus && app.show_diff_files));
     let inner = block.inner(area);
     f.render_widget(block, area);
     app.page = inner.height.max(1) as usize;
@@ -443,6 +466,8 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
                 &[
                     ("j/k", "scroll"),
                     ("[ ]", "prev/next file"),
+                    ("tab", "files ↔ diff"),
+                    ("f", "toggle file list"),
                     ("esc", "back"),
                     ("?", "help"),
                 ]
@@ -499,6 +524,8 @@ fn draw_help(f: &mut Frame) {
         ("enter / l", "open files / file diff"),
         ("D", "diff of the whole commit"),
         ("[ ] (in diff)", "previous / next file"),
+        ("tab (in diff)", "move between file list and diff"),
+        ("f (in diff)", "show / hide the file list"),
         ("Actions", ""),
         ("o", "checkout branch at commit (or detach)"),
         ("y", "copy commit hash (OSC 52)"),

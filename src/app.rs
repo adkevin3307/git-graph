@@ -3,6 +3,7 @@ use std::io::Write;
 use anyhow::Result;
 use git2::{Oid, Repository};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
+use ratatui::layout::Rect;
 
 use crate::repo::{self, CommitDetail, DiffLine, LoadOptions, RefKind, Snapshot};
 
@@ -54,6 +55,13 @@ pub struct App {
     /// Cycle state for `m`: (merge commit, parent index last visited,
     /// commit selected after that jump).
     merge_cycle: Option<(Oid, usize, Oid)>,
+    /// Diff view: show the changed-files list beside the diff.
+    pub show_diff_files: bool,
+    /// Diff view: keyboard focus is on the file list rather than the diff.
+    pub diff_files_focus: bool,
+    /// Where the file list was last drawn, and its scroll offset (for mouse clicks).
+    pub files_area: Rect,
+    pub files_offset: usize,
 }
 
 impl App {
@@ -78,6 +86,10 @@ impl App {
             list_top: 0,
             list_right: 0,
             merge_cycle: None,
+            show_diff_files: true,
+            diff_files_focus: false,
+            files_area: Rect::default(),
+            files_offset: 0,
         };
         if let Some(i) = app.snap.head.and_then(|h| app.snap.index.get(&h).copied()) {
             app.select(i);
@@ -132,6 +144,7 @@ impl App {
 
     fn load_detail(&mut self) {
         self.file_selected = 0;
+        self.files_offset = 0;
         self.detail = self
             .snap
             .commits
@@ -159,6 +172,21 @@ impl App {
         match ev.kind {
             MouseEventKind::ScrollDown => self.scroll(3),
             MouseEventKind::ScrollUp => self.scroll(-3),
+            MouseEventKind::Down(_) if self.diff.is_some() => {
+                // Click a file in the diff view's file list to open it.
+                let a = self.files_area;
+                let inside = ev.column > a.x
+                    && ev.column + 1 < a.x + a.width
+                    && ev.row > a.y
+                    && ev.row + 1 < a.y + a.height;
+                if inside {
+                    let i = self.files_offset + (ev.row - a.y - 1) as usize;
+                    if self.detail.as_ref().is_some_and(|d| i < d.files.len()) {
+                        self.file_selected = i;
+                        self.open_diff(Some(i));
+                    }
+                }
+            }
             MouseEventKind::Down(_)
                 if self.diff.is_none()
                     && ev.column < self.list_right
@@ -358,6 +386,37 @@ impl App {
     }
 
     fn key_diff(&mut self, key: KeyEvent, ctrl: bool, half: isize) {
+        match key.code {
+            KeyCode::Tab | KeyCode::BackTab if self.show_diff_files => {
+                self.diff_files_focus = !self.diff_files_focus;
+                return;
+            }
+            KeyCode::Char('f') => {
+                self.show_diff_files = !self.show_diff_files;
+                self.diff_files_focus = false;
+                return;
+            }
+            _ => {}
+        }
+        if self.diff_files_focus && self.show_diff_files {
+            let n = self.detail.as_ref().map_or(0, |d| d.files.len());
+            match key.code {
+                KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('h') | KeyCode::Left => {
+                    self.diff = None;
+                    self.diff_files_focus = false;
+                }
+                KeyCode::Down | KeyCode::Char('j') | KeyCode::Char(']') => self.step_diff_file(1),
+                KeyCode::Up | KeyCode::Char('k') | KeyCode::Char('[') => self.step_diff_file(-1),
+                KeyCode::Home | KeyCode::Char('g') if n > 0 => self.goto_diff_file(0),
+                KeyCode::End | KeyCode::Char('G') if n > 0 => self.goto_diff_file(n - 1),
+                KeyCode::Enter | KeyCode::Char('l') | KeyCode::Right => {
+                    self.diff_files_focus = false
+                }
+                KeyCode::Char('y') => self.yank(),
+                _ => {}
+            }
+            return;
+        }
         let d = self.diff.as_mut().unwrap();
         let max = d.lines.len().saturating_sub(1);
         let mut scroll = |delta: isize| d.scroll = d.scroll.saturating_add_signed(delta).min(max);
@@ -381,12 +440,19 @@ impl App {
     }
 
     fn step_diff_file(&mut self, delta: isize) {
-        let Some(i) = self.diff.as_ref().and_then(|d| d.file_index) else {
-            return;
-        };
         let n = self.detail.as_ref().map_or(0, |d| d.files.len());
-        let j = i.saturating_add_signed(delta);
-        if j < n && j != i {
+        let j = match self.diff.as_ref().and_then(|d| d.file_index) {
+            Some(i) => i.saturating_add_signed(delta),
+            // From the whole-commit diff, start at the highlighted file.
+            None => self.file_selected,
+        };
+        if j < n {
+            self.goto_diff_file(j);
+        }
+    }
+
+    fn goto_diff_file(&mut self, j: usize) {
+        if self.diff.as_ref().and_then(|d| d.file_index) != Some(j) {
             self.file_selected = j;
             self.open_diff(Some(j));
         }
