@@ -11,7 +11,12 @@ use crate::repo::{self, CommitDetail, DiffLine, LoadOptions, RefKind, Snapshot};
 pub enum Focus {
     Graph,
     Files,
+    /// The diff panel (shown in place of the commit graph).
+    Diff,
 }
+
+/// Columns moved per h/l (or ←/→) in the diff view.
+const HSTEP: usize = 4;
 
 pub enum Mode {
     Normal,
@@ -29,6 +34,10 @@ pub struct DiffView {
     pub title: String,
     pub lines: Vec<DiffLine>,
     pub scroll: usize,
+    /// Horizontal scroll (columns).
+    pub hscroll: usize,
+    /// Width of the longest line, to bound horizontal scrolling.
+    pub max_width: usize,
     pub file_index: Option<usize>,
 }
 
@@ -55,13 +64,11 @@ pub struct App {
     /// Cycle state for `m`: (merge commit, parent index last visited,
     /// commit selected after that jump).
     merge_cycle: Option<(Oid, usize, Oid)>,
-    /// Diff view: show the changed-files list beside the diff.
-    pub show_diff_files: bool,
-    /// Diff view: keyboard focus is on the file list rather than the diff.
-    pub diff_files_focus: bool,
     /// Where the file list was last drawn, and its scroll offset (for mouse clicks).
     pub files_area: Rect,
     pub files_offset: usize,
+    /// Where the diff panel was last drawn (inner text area).
+    pub diff_area: Rect,
 }
 
 impl App {
@@ -86,10 +93,9 @@ impl App {
             list_top: 0,
             list_right: 0,
             merge_cycle: None,
-            show_diff_files: true,
-            diff_files_focus: false,
             files_area: Rect::default(),
             files_offset: 0,
+            diff_area: Rect::default(),
         };
         if let Some(i) = app.snap.head.and_then(|h| app.snap.index.get(&h).copied()) {
             app.select(i);
@@ -172,20 +178,21 @@ impl App {
         match ev.kind {
             MouseEventKind::ScrollDown => self.scroll(3),
             MouseEventKind::ScrollUp => self.scroll(-3),
-            MouseEventKind::Down(_) if self.diff.is_some() => {
-                // Click a file in the diff view's file list to open it.
-                let a = self.files_area;
-                let inside = ev.column > a.x
-                    && ev.column + 1 < a.x + a.width
-                    && ev.row > a.y
-                    && ev.row + 1 < a.y + a.height;
-                if inside {
-                    let i = self.files_offset + (ev.row - a.y - 1) as usize;
-                    if self.detail.as_ref().is_some_and(|d| i < d.files.len()) {
-                        self.file_selected = i;
-                        self.open_diff(Some(i));
-                    }
+            MouseEventKind::ScrollRight => self.hscroll(HSTEP as isize),
+            MouseEventKind::ScrollLeft => self.hscroll(-(HSTEP as isize)),
+            MouseEventKind::Down(_) if inside(self.files_area, ev.column, ev.row, 1) => {
+                // Click a file to show its diff in place of the graph.
+                let i = self.files_offset + (ev.row - self.files_area.y - 1) as usize;
+                if self.detail.as_ref().is_some_and(|d| i < d.files.len()) {
+                    self.file_selected = i;
+                    self.open_diff(Some(i));
+                    self.focus = Focus::Files;
                 }
+            }
+            MouseEventKind::Down(_)
+                if self.diff.is_some() && inside(self.diff_area, ev.column, ev.row, 0) =>
+            {
+                self.focus = Focus::Diff;
             }
             MouseEventKind::Down(_)
                 if self.diff.is_none()
@@ -213,8 +220,22 @@ impl App {
         }
     }
 
+    fn hscroll(&mut self, delta: isize) {
+        let width = self.diff_area.width as usize;
+        if let Some(d) = &mut self.diff {
+            let max = d.max_width.saturating_sub(width);
+            d.hscroll = d.hscroll.saturating_add_signed(delta).min(max);
+        }
+    }
+
+    fn close_diff(&mut self) {
+        self.diff = None;
+        self.focus = Focus::Files;
+    }
+
     fn move_by(&mut self, delta: isize) {
         match self.focus {
+            Focus::Diff => {}
             Focus::Graph => self.select(self.selected.saturating_add_signed(delta)),
             Focus::Files => {
                 let n = self.detail.as_ref().map_or(0, |d| d.files.len());
@@ -317,11 +338,11 @@ impl App {
     fn key_normal(&mut self, key: KeyEvent) {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let half = (self.page / 2).max(1) as isize;
+        self.status.clear();
         if self.diff.is_some() {
             self.key_diff(key, ctrl, half);
             return;
         }
-        self.status.clear();
         match key.code {
             KeyCode::Char('q') => self.quit = true,
             KeyCode::Char('c') if ctrl => self.quit = true,
@@ -351,10 +372,20 @@ impl App {
                         self.focus = Focus::Files;
                     }
                 }
-                Focus::Files => self.open_diff(Some(self.file_selected)),
+                Focus::Files | Focus::Diff => {
+                    self.open_diff(Some(self.file_selected));
+                    if self.diff.is_some() {
+                        self.focus = Focus::Diff;
+                    }
+                }
             },
             KeyCode::Esc | KeyCode::Char('h') | KeyCode::Left => self.focus = Focus::Graph,
-            KeyCode::Char('D') => self.open_diff(None),
+            KeyCode::Char('D') => {
+                self.open_diff(None);
+                if self.diff.is_some() {
+                    self.focus = Focus::Diff;
+                }
+            }
             KeyCode::Char('/') => {
                 self.mode = Mode::Search {
                     input: String::new(),
@@ -385,56 +416,61 @@ impl App {
         }
     }
 
+    /// Keys while a diff is shown in place of the graph. Focus is either
+    /// the diff panel or the file list beside it.
     fn key_diff(&mut self, key: KeyEvent, ctrl: bool, half: isize) {
         match key.code {
-            KeyCode::Tab | KeyCode::BackTab if self.show_diff_files => {
-                self.diff_files_focus = !self.diff_files_focus;
+            KeyCode::Tab | KeyCode::BackTab => {
+                self.focus = if self.focus == Focus::Diff {
+                    Focus::Files
+                } else {
+                    Focus::Diff
+                };
                 return;
             }
-            KeyCode::Char('f') => {
-                self.show_diff_files = !self.show_diff_files;
-                self.diff_files_focus = false;
-                return;
-            }
+            KeyCode::Esc | KeyCode::Char('q') => return self.close_diff(),
+            KeyCode::Char('c') if ctrl => self.quit = true,
+            KeyCode::Char('?') => self.mode = Mode::Help,
+            KeyCode::Char('y') => self.yank(),
+            KeyCode::Char(']') => self.step_diff_file(1),
+            KeyCode::Char('[') => self.step_diff_file(-1),
             _ => {}
         }
-        if self.diff_files_focus && self.show_diff_files {
+        if self.focus == Focus::Files {
             let n = self.detail.as_ref().map_or(0, |d| d.files.len());
             match key.code {
-                KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('h') | KeyCode::Left => {
-                    self.diff = None;
-                    self.diff_files_focus = false;
-                }
-                KeyCode::Down | KeyCode::Char('j') | KeyCode::Char(']') => self.step_diff_file(1),
-                KeyCode::Up | KeyCode::Char('k') | KeyCode::Char('[') => self.step_diff_file(-1),
+                KeyCode::Down | KeyCode::Char('j') => self.step_diff_file(1),
+                KeyCode::Up | KeyCode::Char('k') => self.step_diff_file(-1),
                 KeyCode::Home | KeyCode::Char('g') if n > 0 => self.goto_diff_file(0),
                 KeyCode::End | KeyCode::Char('G') if n > 0 => self.goto_diff_file(n - 1),
-                KeyCode::Enter | KeyCode::Char('l') | KeyCode::Right => {
-                    self.diff_files_focus = false
-                }
-                KeyCode::Char('y') => self.yank(),
+                KeyCode::Enter | KeyCode::Char('l') | KeyCode::Right => self.focus = Focus::Diff,
+                KeyCode::Char('h') | KeyCode::Left => self.close_diff(),
                 _ => {}
             }
             return;
         }
+        let page = self.page as isize;
+        let wide = (self.diff_area.width as isize / 2).max(1);
         let d = self.diff.as_mut().unwrap();
         let max = d.lines.len().saturating_sub(1);
         let mut scroll = |delta: isize| d.scroll = d.scroll.saturating_add_signed(delta).min(max);
         match key.code {
-            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('h') | KeyCode::Left => {
-                self.diff = None
-            }
             KeyCode::Down | KeyCode::Char('j') => scroll(1),
             KeyCode::Up | KeyCode::Char('k') => scroll(-1),
             KeyCode::Char('d') if ctrl => scroll(half),
             KeyCode::Char('u') if ctrl => scroll(-half),
-            KeyCode::PageDown | KeyCode::Char(' ') => scroll(self.page as isize),
-            KeyCode::PageUp => scroll(-(self.page as isize)),
+            KeyCode::PageDown | KeyCode::Char(' ') => scroll(page),
+            KeyCode::PageUp => scroll(-page),
             KeyCode::Home | KeyCode::Char('g') => d.scroll = 0,
             KeyCode::End | KeyCode::Char('G') => d.scroll = max,
-            KeyCode::Char(']') | KeyCode::Char('J') => self.step_diff_file(1),
-            KeyCode::Char('[') | KeyCode::Char('K') => self.step_diff_file(-1),
-            KeyCode::Char('y') => self.yank(),
+            KeyCode::Char('J') => self.step_diff_file(1),
+            KeyCode::Char('K') => self.step_diff_file(-1),
+            KeyCode::Left | KeyCode::Char('h') => self.hscroll(-(HSTEP as isize)),
+            KeyCode::Right | KeyCode::Char('l') => self.hscroll(HSTEP as isize),
+            KeyCode::Char('H') => self.hscroll(-wide),
+            KeyCode::Char('L') => self.hscroll(wide),
+            KeyCode::Char('0') => self.hscroll(isize::MIN / 2),
+            KeyCode::Char('$') => self.hscroll(isize::MAX / 2),
             _ => {}
         }
     }
@@ -476,10 +512,17 @@ impl App {
         };
         match repo::file_diff(&self.repo, detail.id, f) {
             Ok(lines) => {
+                let max_width = lines
+                    .iter()
+                    .map(|l| l.text.chars().count())
+                    .max()
+                    .unwrap_or(0);
                 self.diff = Some(DiffView {
                     title,
                     lines,
                     scroll: 0,
+                    hscroll: 0,
+                    max_width,
                     file_index: file,
                 })
             }
@@ -690,4 +733,12 @@ fn base64(data: &[u8]) -> String {
         }
     }
     out
+}
+
+/// Whether (x, y) lies in `r`, excluding a border of `border` cells.
+fn inside(r: Rect, x: u16, y: u16, border: u16) -> bool {
+    x >= r.x + border
+        && x + border < r.x + r.width
+        && y >= r.y + border
+        && y + border < r.y + r.height
 }

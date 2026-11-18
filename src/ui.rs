@@ -41,23 +41,23 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     .areas(f.area());
     draw_header(f, app, header);
 
-    if app.diff.is_some() {
-        draw_diff(f, app, main);
+    let wide = main.width >= 120;
+    let (list, side) = if wide {
+        let [a, b] = Layout::horizontal([Constraint::Percentage(62), Constraint::Percentage(38)])
+            .areas(main);
+        (a, b)
     } else {
-        let wide = main.width >= 120;
-        let (list, side) = if wide {
-            let [a, b] =
-                Layout::horizontal([Constraint::Percentage(62), Constraint::Percentage(38)])
-                    .areas(main);
-            (a, b)
-        } else {
-            let [a, b] = Layout::vertical([Constraint::Percentage(60), Constraint::Percentage(40)])
-                .areas(main);
-            (a, b)
-        };
+        let [a, b] =
+            Layout::vertical([Constraint::Percentage(60), Constraint::Percentage(40)]).areas(main);
+        (a, b)
+    };
+    // A file diff takes the graph's place; commit details and files stay visible.
+    if app.diff.is_some() {
+        draw_diff(f, app, list);
+    } else {
         draw_graph(f, app, list);
-        draw_side(f, app, side, wide);
     }
+    draw_side(f, app, side, wide);
     draw_footer(f, app, footer);
 
     match &app.mode {
@@ -412,22 +412,17 @@ fn draw_files(f: &mut Frame, app: &mut App, area: Rect, focused: bool) {
 }
 
 fn draw_diff(f: &mut Frame, app: &mut App, area: Rect) {
-    // File list on the left (when enabled and there is room), diff on the right.
-    let area = if app.show_diff_files && area.width >= 70 {
-        let w = (area.width * 3 / 10).clamp(28, 50);
-        let [files, diff] =
-            Layout::horizontal([Constraint::Length(w), Constraint::Min(20)]).areas(area);
-        draw_files(f, app, files, app.diff_files_focus);
-        diff
-    } else {
-        app.files_area = Rect::default();
-        area
-    };
     let Some(d) = &app.diff else { return };
-    let block = panel(&d.title, !(app.diff_files_focus && app.show_diff_files));
+    let title = if d.hscroll > 0 {
+        format!("{}  ← col {}", d.title, d.hscroll + 1)
+    } else {
+        d.title.clone()
+    };
+    let block = panel(&title, app.focus == Focus::Diff);
     let inner = block.inner(area);
     f.render_widget(block, area);
     app.page = inner.height.max(1) as usize;
+    app.diff_area = inner;
     let lines: Vec<Line> = d
         .lines
         .iter()
@@ -444,7 +439,8 @@ fn draw_diff(f: &mut Frame, app: &mut App, area: Rect) {
             Line::styled(l.text.clone(), st)
         })
         .collect();
-    f.render_widget(Paragraph::new(lines), inner);
+    let hscroll = u16::try_from(d.hscroll).unwrap_or(u16::MAX);
+    f.render_widget(Paragraph::new(lines).scroll((0, hscroll)), inner);
 }
 
 fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
@@ -462,12 +458,21 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
             Line::styled(format!(" {}", app.status), Style::new().fg(Color::Yellow))
         }
         _ => {
-            let keys: &[(&str, &str)] = if app.diff.is_some() {
+            let keys: &[(&str, &str)] = if app.diff.is_some() && app.focus == Focus::Diff {
                 &[
                     ("j/k", "scroll"),
+                    ("h/l ←/→", "scroll sideways"),
+                    ("0/$", "line start/end"),
                     ("[ ]", "prev/next file"),
-                    ("tab", "files ↔ diff"),
-                    ("f", "toggle file list"),
+                    ("tab", "files"),
+                    ("esc", "back"),
+                    ("?", "help"),
+                ]
+            } else if app.diff.is_some() {
+                &[
+                    ("j/k", "switch file"),
+                    ("enter/l", "focus diff"),
+                    ("tab", "diff"),
                     ("esc", "back"),
                     ("?", "help"),
                 ]
@@ -523,9 +528,13 @@ fn draw_help(f: &mut Frame) {
         ("tab", "switch focus commits ↔ files"),
         ("enter / l", "open files / file diff"),
         ("D", "diff of the whole commit"),
-        ("[ ] (in diff)", "previous / next file"),
-        ("tab (in diff)", "move between file list and diff"),
-        ("f (in diff)", "show / hide the file list"),
+        ("Diff (replaces the graph)", ""),
+        ("tab", "switch focus diff ↔ files"),
+        ("[ ]", "previous / next file"),
+        ("j/k (files)", "switch file, diff follows"),
+        ("h/l ←/→", "scroll diff sideways (H/L: half page)"),
+        ("0 / $", "scroll to line start / end"),
+        ("esc / q", "close diff, back to the graph"),
         ("Actions", ""),
         ("o", "checkout branch at commit (or detach)"),
         ("y", "copy commit hash (OSC 52)"),
