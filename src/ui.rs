@@ -540,7 +540,6 @@ fn draw_help(f: &mut Frame) {
         ("Diff (replaces the graph)", ""),
         ("tab / shift-tab", "next / previous file (wraps around)"),
         ("z", "maximize / restore the diff"),
-        ("[ ]", "previous / next file"),
         ("j/k (files)", "switch file, diff follows"),
         ("h / l", "scroll diff sideways (H/L: half page)"),
         ("0 / $", "scroll to line start / end"),

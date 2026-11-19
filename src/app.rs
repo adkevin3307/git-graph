@@ -568,8 +568,6 @@ impl App {
             KeyCode::Char('c') if ctrl => self.quit = true,
             KeyCode::Char('?') => self.mode = Mode::Help,
             KeyCode::Char('y') => self.yank(),
-            KeyCode::Char(']') => self.step_diff_file(1),
-            KeyCode::Char('[') => self.step_diff_file(-1),
             _ => {}
         }
         if self.focus == Focus::Files {

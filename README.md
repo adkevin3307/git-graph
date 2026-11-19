@@ -170,7 +170,6 @@ Press `?` in the app for this list.
 | `enter` / `l` | From the graph: focus the files; from the files: open the diff |
 | `D` | Diff of the whole commit |
 | `tab` / `shift-tab` | Next / previous file, wrapping around |
-| `[` / `]` | Previous / next file |
 | `j`/`k` (files focused) | Switch file; the diff follows |
 | `z` | Maximize / restore the diff |
 | `h` / `l`, `H` / `L` | Scroll the diff sideways (4 columns / half a page) |
