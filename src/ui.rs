@@ -330,14 +330,8 @@ fn draw_side(f: &mut Frame, app: &mut App, area: Rect, wide: bool) {
     }
     lines.push(Line::raw(""));
     if let Some(d) = &app.detail {
-        let mut first = true;
         for l in d.message.lines() {
-            lines.push(if first {
-                Line::styled(l.to_string(), Style::new().bold())
-            } else {
-                Line::raw(l.to_string())
-            });
-            first = false;
+            lines.push(Line::raw(l.to_string()));
         }
     }
     f.render_widget(
