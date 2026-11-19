@@ -606,8 +606,6 @@ impl App {
             KeyCode::PageUp => scroll(-page),
             KeyCode::Home | KeyCode::Char('g') => d.scroll = 0,
             KeyCode::End | KeyCode::Char('G') => d.scroll = max,
-            KeyCode::Char('J') => self.step_diff_file(1),
-            KeyCode::Char('K') => self.step_diff_file(-1),
             KeyCode::Char('h') => self.hscroll(-(HSTEP as isize)),
             KeyCode::Char('l') => self.hscroll(HSTEP as isize),
             KeyCode::Char('H') => self.hscroll(-wide),
