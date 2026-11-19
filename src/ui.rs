@@ -85,17 +85,11 @@ pub fn draw(f: &mut Frame, app: &mut App) {
 
 fn draw_header(f: &mut Frame, app: &App, area: Rect) {
     let mut spans = vec![
-        Span::styled(
-            " git-graph ",
-            Style::new().bg(ACCENT).fg(Color::Black).bold(),
-        ),
+        Span::styled(" git-graph ", Style::new().bg(ACCENT).fg(Color::Black)),
         Span::raw(" "),
-        Span::styled(short_path(&app.snap.workdir), Style::new().bold()),
+        Span::styled(short_path(&app.snap.workdir), Style::new()),
         Span::styled("  on ", Style::new().fg(DIM)),
-        Span::styled(
-            app.snap.head_name.clone(),
-            Style::new().fg(PALETTE[0]).bold(),
-        ),
+        Span::styled(app.snap.head_name.clone(), Style::new().fg(PALETTE[0])),
     ];
     if let Some(p) = &app.snap.primary {
         spans.push(Span::styled(format!("  trunk: {p}"), Style::new().fg(DIM)));
@@ -121,7 +115,7 @@ fn panel(title: &str, focused: bool) -> Block<'_> {
         .title(Span::styled(
             format!(" {title} "),
             if focused {
-                Style::new().fg(ACCENT).bold()
+                Style::new().fg(ACCENT)
             } else {
                 Style::new()
             },
@@ -367,10 +361,7 @@ fn draw_files(f: &mut Frame, app: &mut App, area: Rect, focused: bool) {
                 'R' | 'C' => Color::LightMagenta,
                 _ => Color::LightYellow,
             };
-            let mut spans = vec![Span::styled(
-                format!("{} ", fc.status),
-                Style::new().fg(sc).bold(),
-            )];
+            let mut spans = vec![Span::styled(format!("{} ", fc.status), Style::new().fg(sc))];
             if let Some(old) = &fc.old_path {
                 spans.push(Span::styled(format!("{old} → "), Style::new().fg(DIM)));
             }
@@ -435,7 +426,7 @@ fn draw_diff(f: &mut Frame, app: &mut App, area: Rect) {
         .take(inner.height as usize)
         .map(|l| {
             let st = match l.kind {
-                DiffKind::Header => Style::new().bold(),
+                DiffKind::Header => Style::new(),
                 DiffKind::Hunk => Style::new().fg(Color::Cyan),
                 DiffKind::Add => Style::new().fg(Color::LightGreen),
                 DiffKind::Del => Style::new().fg(Color::LightRed),
@@ -452,7 +443,7 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
     let line = match &app.mode {
         Mode::Confirm { prompt, .. } => Line::styled(
             prompt.clone(),
-            Style::new().fg(Color::Black).bg(Color::Yellow).bold(),
+            Style::new().fg(Color::Black).bg(Color::Yellow),
         ),
         _ if !app.status.is_empty() => {
             Line::styled(format!(" {}", app.status), Style::new().fg(Color::Yellow))
@@ -507,7 +498,7 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
             };
             let mut spans = vec![Span::raw(" ")];
             for (k, v) in keys {
-                spans.push(Span::styled(*k, Style::new().fg(ACCENT).bold()));
+                spans.push(Span::styled(*k, Style::new().fg(ACCENT)));
                 spans.push(Span::styled(format!(" {v}  "), Style::new().fg(DIM)));
             }
             Line::from(spans)
@@ -564,7 +555,7 @@ fn draw_help(f: &mut Frame) {
         .iter()
         .map(|(k, v)| {
             if v.is_empty() {
-                Line::styled(format!(" {k}"), Style::new().fg(ACCENT).bold())
+                Line::styled(format!(" {k}"), Style::new().fg(ACCENT))
             } else {
                 Line::from(vec![
                     Span::styled(format!("   {k:<22}"), Style::new().fg(Color::Yellow)),
