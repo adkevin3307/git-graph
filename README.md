@@ -38,8 +38,9 @@ graph that you can browse, search and diff from the keyboard.
 
 ## Features
 
-- **git-igitt-style graph.** Each branch keeps its own column, grouped
-  git-flow style (main · hotfix/release · develop · everything else). Merges
+- **git-igitt-style graph.** Each branch keeps its own column, ordered
+  git-flow style (main · hotfix/release · develop · everything else) but
+  packed tighter than git-igitt, without empty columns. Merges
   are drawn on the merge commit's row with an arrow (`○<──╮`), forks on a
   connector row just above the parent (`├───╯`). See
   [How the graph is drawn](#how-the-graph-is-drawn).
@@ -189,8 +190,8 @@ Press `?` in the app for this list.
 ## How the graph is drawn
 
 The layout is a port of the model used by git-igitt's renderer (the
-[gleisbau](https://crates.io/crates/gleisbau) crate), so graphs come out the
-same:
+[gleisbau](https://crates.io/crates/gleisbau) crate), with columns packed
+more tightly:
 
 1. **Commits are attributed to branches** by following first parents from
    each branch tip, and from each merge commit's merged parent (named from the
@@ -199,8 +200,11 @@ same:
    develop, feature, release, hotfix, bugfix, then others — with merged
    branches first within each level. A branch merged into one of the same name
    (e.g. a pull request from a fork's `master`) becomes `fork/<name>`.
-2. **Each branch gets one column** for its whole extent. Columns are grouped
-   main | hotfix, release | develop | other, and filled shortest branch first.
+2. **Each branch gets one column** for its whole extent. Branches are placed in
+   group order — main, hotfix/release, develop, other — shortest first, each
+   in the leftmost free column that is right of every earlier-group branch
+   overlapping it. So groups stay in order left to right, but a group with no
+   branch at some point in history doesn't leave an empty column there.
 3. **Connections zig-zag** between columns: down the child's column, across on
    a "split" row, down the parent's column. Forks turn on the row just above
    the parent; merges on the merge commit's own row, with an arrow into it.
@@ -209,12 +213,17 @@ same:
 4. **The graph has one width** for the whole history, so the text column
    never shifts while scrolling.
 
-It was checked against gleisbau 0.7.3 directly: on git-igitt's own history, a
-synthetic git-flow repository and several other repositories, the graphs are
-identical row for row, in both compact and sparse mode.
+Before column packing was added, the port was checked against gleisbau 0.7.3
+directly: on git-igitt's own history, a synthetic git-flow repository and
+several other repositories the graphs were identical row for row, in both
+compact and sparse mode. The packing changes only which column a branch gets;
+rows, merges and forks are drawn the same way.
 
 **Deliberate differences from git-igitt:**
 
+- **Narrower graphs.** git-igitt reserves a block of columns per group for
+  the whole history, so e.g. a single old hotfix branch leaves an empty
+  column next to main everywhere. Here empty columns are dropped.
 - **Octopus merges** (three or more parents) connect every parent. gleisbau
   draws only the first two and drops commits reachable only through the
   others.

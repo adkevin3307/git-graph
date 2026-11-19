@@ -421,8 +421,14 @@ fn trace(
     };
 }
 
-/// Give every visible track a column: per group, shortest branches first,
-/// each in the leftmost column free over its row range.
+/// Give every visible track a column. Tracks are placed in group order
+/// (main, hotfix/release, develop, other), then git-igitt's order within a
+/// group (by the groups they fork from / merge into, shortest first, top
+/// first), each in the leftmost column that is free over its row range.
+///
+/// Unlike git-igitt, groups don't reserve blocks of columns: a branch only
+/// has to stay right of the earlier-group branches that overlap it, so a
+/// group that is empty somewhere doesn't leave a gap there.
 fn assign_columns(tracks: &mut [Track], trace_of: &[usize], groups: usize, n: usize) {
     // Visible tracks, in order of first appearance.
     let mut visible: Vec<usize> = Vec::new();
@@ -439,51 +445,48 @@ fn assign_columns(tracks: &mut [Track], trace_of: &[usize], groups: usize, n: us
             tr.range.1.unwrap_or(n.saturating_sub(1)),
         )
     };
-    let group_of =
-        |tracks: &[Track], t: Option<usize>| t.filter(|&t| seen[t]).map(|t| tracks[t].group);
+    let group_of = |t: Option<usize>| t.filter(|&t| seen[t]).map(|t| tracks[t].group);
     let none_group = groups + 1;
-    let mut order: Vec<(usize, (usize, i64, i64))> = visible
+    let mut order: Vec<(usize, (usize, usize, i64, i64))> = visible
         .iter()
         .map(|&t| {
             let tr = &tracks[t];
             let (s, e) = extent(tr);
-            let g = max(
-                group_of(tracks, tr.source).unwrap_or(none_group),
-                group_of(tracks, tr.target).unwrap_or(none_group),
+            let linked = max(
+                group_of(tr.source).unwrap_or(none_group),
+                group_of(tr.target).unwrap_or(none_group),
             );
-            (t, (g, e as i64 - s as i64, s as i64))
+            (t, (tr.group, linked, e as i64 - s as i64, s as i64))
         })
         .collect();
     order.sort_by_key(|&(_, key)| key);
 
-    let mut occupied: Vec<Vec<Vec<(usize, usize)>>> = vec![Vec::new(); groups + 1];
+    let mut occupied: Vec<Vec<(usize, usize)>> = Vec::new();
+    let mut placed: Vec<(usize, usize, usize, usize)> = Vec::new(); // (group, start, end, column)
     for (t, _) in order {
         let (s, e) = extent(&tracks[t]);
         let g = tracks[t].group;
-        let align_right = group_of(tracks, tracks[t].source).is_some_and(|sg| sg > g)
-            || group_of(tracks, tracks[t].target).is_some_and(|tg| tg > g);
+        // Keep groups in order left to right: stay right of every branch of
+        // an earlier group that overlaps this one.
+        let min_col = placed
+            .iter()
+            .filter(|&&(pg, ps, pe, _)| pg < g && s <= pe && e >= ps)
+            .map(|&(_, _, _, c)| c + 1)
+            .max()
+            .unwrap_or(0);
+        // Don't share the column of the branch this one merges into.
         let target_col = tracks[t].target.and_then(|tt| tracks[tt].column);
-        let cols = &mut occupied[g];
-        let count = cols.len();
-        let found = (0..count)
-            .map(|i| if align_right { count - i - 1 } else { i })
-            .find(|&ci| {
-                !cols[ci].iter().any(|&(os, oe)| s <= oe && e >= os) && target_col != Some(ci)
+        let found = (min_col..occupied.len())
+            .find(|&c| {
+                target_col != Some(c) && !occupied[c].iter().any(|&(os, oe)| s <= oe && e >= os)
             })
-            .unwrap_or(count);
-        if found == count {
-            cols.push(Vec::new());
+            .unwrap_or(occupied.len().max(min_col));
+        while occupied.len() <= found {
+            occupied.push(Vec::new());
         }
-        cols[found].push((s, e));
+        occupied[found].push((s, e));
+        placed.push((g, s, e, found));
         tracks[t].column = Some(found);
-    }
-    let mut offset = vec![0; groups + 1];
-    for g in 1..=groups {
-        offset[g] = offset[g - 1] + occupied[g - 1].len();
-    }
-    for &t in &visible {
-        let g = tracks[t].group;
-        tracks[t].column = tracks[t].column.map(|c| c + offset[g]);
     }
 }
 
