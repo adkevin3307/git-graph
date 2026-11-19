@@ -204,7 +204,9 @@ more tightly:
    group order — main, hotfix/release, develop, other — shortest first, each
    in the leftmost free column that is right of every earlier-group branch
    overlapping it. So groups stay in order left to right, but a group with no
-   branch at some point in history doesn't leave an empty column there.
+   branch at some point in history doesn't leave an empty column there. A
+   branch's extent runs from the first row where anything is drawn in its
+   column (its newest commit, or a merge into it) down to where it forked.
 3. **Connections zig-zag** between columns: down the child's column, across on
    a "split" row, down the parent's column. Forks turn on the row just above
    the parent; merges on the merge commit's own row, with an arrow into it.
@@ -223,7 +225,10 @@ rows, merges and forks are drawn the same way.
 
 - **Narrower graphs.** git-igitt reserves a block of columns per group for
   the whole history, so e.g. a single old hotfix branch leaves an empty
-  column next to main everywhere. Here empty columns are dropped.
+  column next to main everywhere; and a branch that still exists keeps its
+  column from the very top of the graph, even when its newest commit is far
+  down. Here empty columns are dropped and a branch's column only starts
+  where the branch is first drawn.
 - **Octopus merges** (three or more parents) connect every parent. gleisbau
   draws only the first two and drops commits reachable only through the
   others.

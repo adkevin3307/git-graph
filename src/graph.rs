@@ -247,6 +247,34 @@ pub fn layout(nodes: &[Node], mut specs: Vec<BranchSpec>, groups: usize, compact
         }
     }
 
+    // Where a branch's column starts. git-igitt reserves the column of a
+    // branch that still exists (and of anonymous ones) from the top of the
+    // graph, so an old branch whose tip is far down blocks its column all the
+    // way up. Start it where something is first drawn in it instead: its
+    // newest commit, or higher where a connection turns into the column (a
+    // merge commit's row, or the row above a commit another branch forks
+    // from).
+    let mut top: Vec<Option<usize>> = vec![None; tracks.len()];
+    for i in 0..n {
+        let t = trace_of[i];
+        let mut row = i;
+        for &ch in &children[i] {
+            if trace_of[ch] != t {
+                row = row.min(if is_merge(ch) {
+                    ch
+                } else {
+                    i.saturating_sub(1)
+                });
+            }
+        }
+        top[t] = Some(top[t].map_or(row, |r| r.min(row)));
+    }
+    for (t, tr) in tracks.iter_mut().enumerate() {
+        if tr.range.0.is_none() {
+            tr.range.0 = top[t];
+        }
+    }
+
     // 3. Columns.
     assign_columns(&mut tracks, &trace_of, groups, n);
     let col: Vec<usize> = (0..n)
@@ -724,5 +752,27 @@ mod tests {
         assert_eq!(rows, vec!["○<╮", "● │", "│ ●", "├─╯", "●  "]);
         assert_eq!(g.commit_branch[2].as_deref(), Some("fork/main"));
         assert_eq!(g.commit_color[2], 7);
+    }
+
+    #[test]
+    fn old_branch_does_not_block_its_column_above_its_tip() {
+        // A merged branch (5) near the top and an old live branch (3) whose
+        // tip is further down: both fit in column 1, so the merge stays tight.
+        let g = render(
+            &[
+                (7, &[6, 5]),
+                (6, &[4]),
+                (5, &[4]),
+                (4, &[2]),
+                (3, &[1]),
+                (2, &[1]),
+                (1, &[]),
+            ],
+            &[("main", 7, 0, 0), ("old", 3, PERS_OTHER, 3)],
+        );
+        assert_eq!(
+            g,
+            vec!["○<╮", "● │", "│ ●", "├─╯", "●", "│ ●", "● │", "├─╯", "●"]
+        );
     }
 }
