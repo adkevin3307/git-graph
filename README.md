@@ -142,11 +142,14 @@ The focused pane has a highlighted border; `←`/`→` move focus through
 
 Press `?` in the app for this list.
 
-**Navigation**
+What `j`/`k`, `g`/`G` and paging do depends on the focused pane (`←`/`→`
+move focus).
+
+**Commits (graph)**
 
 | Key | Action |
 |---|---|
-| `j`/`k`, `↓`/`↑` | Move the selection (or scroll the focused pane) |
+| `j`/`k`, `↓`/`↑` | Move the selection |
 | `ctrl-d`/`ctrl-u`, `PgDn`/`PgUp` | Half / full page |
 | `g` / `G` | First / last commit |
 | `H` | Jump to HEAD |
@@ -163,17 +166,31 @@ Press `?` in the app for this list.
 | `n` / `N` | Next / previous match |
 | `s` | Toggle search highlighting |
 
-**Files and diffs**
+**Commit details**
 
 | Key | Action |
 |---|---|
-| `enter` / `l` | From the graph: focus the files; from the files: open the diff |
+| `j`/`k`, `g`/`G` | Scroll / top / bottom |
+
+**Files**
+
+| Key | Action |
+|---|---|
+| `j`/`k`, `g`/`G` | Select a file / first / last; if a diff is shown, it follows |
+| `enter` / `l` | Show the selected file's diff (from the graph, `enter` focuses the files) |
 | `D` | Diff of the whole commit |
-| `tab` / `shift-tab` | Next / previous file, wrapping around |
-| `j`/`k` (files focused) | Switch file; the diff follows |
-| `z` | Maximize / restore the diff |
-| `h` / `l`, `H` / `L` | Scroll the diff sideways (4 columns / half a page) |
+
+**Diff** (shown in place of the graph)
+
+| Key | Action |
+|---|---|
+| `j`/`k` | Scroll up / down |
+| `ctrl-d`/`ctrl-u`, `PgDn`/`PgUp` | Half / full page |
+| `g` / `G` | Top / bottom |
+| `h` / `l`, `H` / `L` | Scroll sideways (4 columns / half a page) |
 | `0` / `$` | Scroll to line start / end |
+| `tab` / `shift-tab` | Next / previous file, wrapping around |
+| `z` | Maximize / restore the diff |
 | `esc` | Close the diff and return to the graph |
 
 **Actions**
@@ -183,7 +200,7 @@ Press `?` in the app for this list.
 | `o` | Check out the branch at this commit, or detach HEAD there (asks first) |
 | `y` | Copy the commit hash (OSC 52) |
 | `r` | Reload the repository |
-| `?` | Help |
+| `?` | Help (`j`/`k` scroll it if it doesn't fit; any other key closes it) |
 | `q` | Quit |
 
 ## How the graph is drawn

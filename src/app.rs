@@ -36,7 +36,10 @@ pub enum Mode {
         prompt: String,
         action: Pending,
     },
-    Help,
+    /// Help overlay, scrolled down by `scroll` lines.
+    Help {
+        scroll: u16,
+    },
 }
 
 pub enum Pending {
@@ -89,6 +92,8 @@ pub struct App {
     /// Scroll offset of the commit details pane, and where it was drawn.
     pub commit_scroll: u16,
     pub commit_area: Rect,
+    /// How far the help can scroll (set when it is drawn).
+    pub help_max: u16,
 }
 
 impl App {
@@ -120,6 +125,7 @@ impl App {
             diff_maximized: false,
             commit_scroll: 0,
             commit_area: Rect::default(),
+            help_max: 0,
         };
         if let Some(i) = app.snap.head.and_then(|h| app.snap.index.get(&h).copied()) {
             app.select(i);
@@ -339,7 +345,18 @@ impl App {
     pub fn on_key(&mut self, key: KeyEvent) {
         match &mut self.mode {
             Mode::Normal => self.key_normal(key),
-            Mode::Help => self.mode = Mode::Normal,
+            Mode::Help { scroll } => match key.code {
+                // Scroll when the help doesn't fit; any other key closes it.
+                KeyCode::Down | KeyCode::Char('j') => *scroll = (*scroll + 1).min(self.help_max),
+                KeyCode::Up | KeyCode::Char('k') => *scroll = scroll.saturating_sub(1),
+                KeyCode::PageDown | KeyCode::Char(' ') => {
+                    *scroll = (*scroll + 10).min(self.help_max)
+                }
+                KeyCode::PageUp => *scroll = scroll.saturating_sub(10),
+                KeyCode::Home | KeyCode::Char('g') => *scroll = 0,
+                KeyCode::End | KeyCode::Char('G') => *scroll = self.help_max,
+                _ => self.mode = Mode::Normal,
+            },
             Mode::Search {
                 input,
                 results,
@@ -481,7 +498,7 @@ impl App {
         match key.code {
             KeyCode::Char('q') => self.quit = true,
             KeyCode::Char('c') if ctrl => self.quit = true,
-            KeyCode::Char('?') => self.mode = Mode::Help,
+            KeyCode::Char('?') => self.mode = Mode::Help { scroll: 0 },
             KeyCode::Down | KeyCode::Char('j') => self.move_by(1),
             KeyCode::Up | KeyCode::Char('k') => self.move_by(-1),
             KeyCode::Char('d') if ctrl => self.move_by(half),
@@ -566,7 +583,7 @@ impl App {
             KeyCode::Esc => return self.close_diff(),
             KeyCode::Char('q') => self.quit = true,
             KeyCode::Char('c') if ctrl => self.quit = true,
-            KeyCode::Char('?') => self.mode = Mode::Help,
+            KeyCode::Char('?') => self.mode = Mode::Help { scroll: 0 },
             KeyCode::Char('y') => self.yank(),
             _ => {}
         }
@@ -588,6 +605,7 @@ impl App {
                 KeyCode::Down | KeyCode::Char('j') => self.scroll_commit(1),
                 KeyCode::Up | KeyCode::Char('k') => self.scroll_commit(-1),
                 KeyCode::Home | KeyCode::Char('g') => self.commit_scroll = 0,
+                KeyCode::End | KeyCode::Char('G') => self.scroll_commit(isize::MAX / 2),
                 _ => {}
             }
             return;

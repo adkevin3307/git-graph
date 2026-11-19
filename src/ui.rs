@@ -71,8 +71,10 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     }
     draw_footer(f, app, footer);
 
+    if let Mode::Help { scroll } = app.mode {
+        draw_help(f, app, scroll);
+    }
     match &app.mode {
-        Mode::Help => draw_help(f),
         Mode::Branches { filter, selected } => draw_branches(f, app, filter, *selected),
         Mode::Search {
             input,
@@ -518,10 +520,10 @@ fn centered(area: Rect, w: u16, h: u16) -> Rect {
     )
 }
 
-fn draw_help(f: &mut Frame) {
+fn draw_help(f: &mut Frame, app: &mut App, scroll: u16) {
     let rows: &[(&str, &str)] = &[
-        ("Navigation", ""),
-        ("j/k ↑/↓", "move selection"),
+        ("Commits", ""),
+        ("j/k ↑/↓", "move the selection"),
         ("ctrl-d/u, PgDn/PgUp", "half / full page"),
         ("g/G", "first / last commit"),
         ("H", "jump to HEAD"),
@@ -534,16 +536,24 @@ fn draw_help(f: &mut Frame) {
         ("s", "toggle search highlight"),
         ("Panes", ""),
         ("← / →", "previous / next pane: graph, commit, files, diff"),
-        ("j/k (commit)", "scroll the commit details"),
-        ("enter / l", "open files / file diff"),
+        ("Commit details", ""),
+        ("j/k, g/G", "scroll / top / bottom"),
+        ("Files", ""),
+        (
+            "j/k, g/G",
+            "select file / first / last; a shown diff follows",
+        ),
+        ("enter / l", "show the selected file's diff"),
         ("D", "diff of the whole commit"),
         ("Diff (replaces the graph)", ""),
+        ("j/k", "scroll up / down"),
+        ("ctrl-d/u, PgDn/PgUp", "half / full page"),
+        ("g/G", "top / bottom"),
+        ("h/l, H/L", "scroll sideways (4 columns / half a page)"),
+        ("0 / $", "scroll to line start / end"),
         ("tab / shift-tab", "next / previous file (wraps around)"),
         ("z", "maximize / restore the diff"),
-        ("j/k (files)", "switch file, diff follows"),
-        ("h / l", "scroll diff sideways (H/L: half page)"),
-        ("0 / $", "scroll to line start / end"),
-        ("esc", "close diff, back to the graph"),
+        ("esc", "close the diff, back to the graph"),
         ("Actions", ""),
         ("o", "checkout branch at commit (or detach)"),
         ("y", "copy commit hash (OSC 52)"),
@@ -563,10 +573,19 @@ fn draw_help(f: &mut Frame) {
             }
         })
         .collect();
-    let area = centered(f.area(), 66, lines.len() as u16 + 2);
+    let area = centered(f.area(), 80, lines.len() as u16 + 2);
+    let max = (lines.len() as u16).saturating_sub(area.height.saturating_sub(2));
+    app.help_max = max;
+    let title = if max > 0 {
+        "Help — j/k scroll, any other key closes"
+    } else {
+        "Help — any key to close"
+    };
     f.render_widget(Clear, area);
     f.render_widget(
-        Paragraph::new(lines).block(panel("Help — any key to close", true)),
+        Paragraph::new(lines)
+            .scroll((scroll.min(max), 0))
+            .block(panel(title, true)),
         area,
     );
 }
