@@ -56,7 +56,9 @@ graph that you can browse, search and diff from the keyboard.
 - **Search popup** with live results across message, author, email, hash and
   branch/tag names; `n`/`N` to step through matches, `s` to toggle
   highlighting.
-- **Branch & tag picker** with type-to-filter.
+- **Stashes** appear as `stash@{n}` commits hanging off the commit they were
+  made on, with their changed files and diff (hide them with `--no-stash`).
+- **Branch, tag & stash picker** with type-to-filter.
 - **Walk the history**: first parent, merged parent (repeat `m` to cycle the
   parents of an octopus merge), child, HEAD.
 - **Safe checkout** of the branch at a commit (or a detached HEAD), with
@@ -117,6 +119,7 @@ git-graph [OPTIONS] [PATH]
 | `-n, --limit <N>` | Maximum number of commits to load (default: 20000) |
 | `-m, --main <BRANCH>` | Trunk branch: leftmost column and color 0 (default: first of `main`, `master`, `trunk`, `develop`, `origin/main`, `origin/master`) |
 | `--no-compact` | Give every branch connector its own row instead of sharing free commit rows (like git-igitt's `--sparse`) |
+| `--no-stash` | Don't show stash entries |
 | `--no-mouse` | Disable mouse support, so the terminal's own text selection works |
 | `--print` | Print the graph to stdout instead of starting the TUI |
 
@@ -155,7 +158,7 @@ move focus).
 | `H` | Jump to HEAD |
 | `p` / `c` | First parent / child |
 | `m` | Merged parent; press again to cycle through every parent of an octopus merge |
-| `b` | Branch & tag picker (type to filter, `enter` to jump) |
+| `b` | Branch, tag & stash picker (type to filter, `enter` to jump) |
 | `←` / `→` | Previous / next pane: graph, commit, files, diff |
 
 **Search**
@@ -197,7 +200,7 @@ move focus).
 
 | Key | Action |
 |---|---|
-| `o` | Check out the branch at this commit, or detach HEAD there (asks first) |
+| `o` | Check out the branch at this commit, or detach HEAD there (asks first; not for stashes) |
 | `y` | Copy the commit hash (OSC 52) |
 | `r` | Reload the repository |
 | `?` | Help (`j`/`k` scroll it if it doesn't fit; any other key closes it) |

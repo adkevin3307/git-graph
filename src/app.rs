@@ -792,6 +792,11 @@ impl App {
         let Some(c) = self.snap.commits.get(self.selected) else {
             return;
         };
+        let labels = self.snap.refs.get(&c.id);
+        if labels.is_some_and(|ls| ls.iter().any(|l| l.kind == RefKind::Stash)) {
+            self.status = "This is a stash; use `git stash apply` / `pop` to restore it".into();
+            return;
+        }
         let branch = self
             .snap
             .refs

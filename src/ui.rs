@@ -248,6 +248,7 @@ fn ref_style(name: &str, kind: RefKind, lane_color: usize) -> (String, Style) {
                 .add_modifier(Modifier::ITALIC),
         ),
         RefKind::Tag => (format!("<{name}>"), Style::new().fg(TAG)),
+        RefKind::Stash => (format!("[{name}]"), Style::new().fg(color(lane_color))),
     }
 }
 
@@ -529,7 +530,7 @@ fn draw_help(f: &mut Frame, app: &mut App, scroll: u16) {
         ("H", "jump to HEAD"),
         ("p / c", "first parent / child"),
         ("m", "merged parent (repeat to cycle octopus)"),
-        ("b", "branch & tag picker (type to filter)"),
+        ("b", "branch, tag & stash picker (type to filter)"),
         ("Search", ""),
         ("/", "search popup: message, author, hash, refs"),
         ("n / N", "next / previous match"),

@@ -33,6 +33,9 @@ struct Cli {
     /// commit rows (like git-igitt's --sparse).
     #[arg(long)]
     no_compact: bool,
+    /// Don't show stash entries.
+    #[arg(long)]
+    no_stash: bool,
     /// Disable mouse support (keeps terminal text selection working).
     #[arg(long)]
     no_mouse: bool,
@@ -49,6 +52,7 @@ fn main() -> Result<()> {
         limit: cli.limit,
         primary: cli.main.clone(),
         compact: !cli.no_compact,
+        stash: !cli.no_stash,
     };
 
     if cli.print {

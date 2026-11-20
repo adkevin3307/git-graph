@@ -161,7 +161,8 @@ impl Occ {
 }
 
 /// `groups`: number of named column groups; unmatched branches use group
-/// `groups`. `compact`: let connector lines share commit rows when free.
+/// `groups` (and anything placed after all branches, like stashes, can use
+/// `groups + 1`). `compact`: let connector lines share commit rows when free.
 pub fn layout(nodes: &[Node], mut specs: Vec<BranchSpec>, groups: usize, compact: bool) -> Graph {
     let n = nodes.len();
     let index: HashMap<Id, usize> = nodes.iter().enumerate().map(|(i, c)| (c.id, i)).collect();

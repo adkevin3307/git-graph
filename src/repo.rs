@@ -12,6 +12,7 @@ pub enum RefKind {
     Local,
     Remote,
     Tag,
+    Stash,
 }
 
 #[derive(Clone, Debug)]
@@ -100,6 +101,7 @@ impl Snapshot {
     pub fn label_color(&self, label: &RefLabel) -> Option<usize> {
         match label.kind {
             RefKind::Tag => None,
+            RefKind::Stash => Some(name_color("stash", self.primary_norm().as_deref())),
             RefKind::Head if label.name == "HEAD" => None,
             _ => Some(name_color(
                 &normalize(&label.name, &self.remotes),
@@ -118,6 +120,8 @@ pub struct LoadOptions {
     pub limit: usize,
     pub primary: Option<String>,
     pub compact: bool,
+    /// Show stash entries in the graph.
+    pub stash: bool,
 }
 
 pub fn open(path: &Path) -> Result<Repository> {
@@ -235,6 +239,19 @@ pub fn load(repo: &Repository, opts: &LoadOptions) -> Result<Snapshot> {
             color: 0,
         });
     }
+    let stashes = if opts.stash {
+        add_stashes(repo, &mut commits)?
+    } else {
+        Vec::new()
+    };
+    for (n, &id) in stashes.iter().enumerate() {
+        let label = RefLabel {
+            name: format!("stash@{{{n}}}"),
+            kind: RefKind::Stash,
+        };
+        refs.entry(id).or_default().push(label.clone());
+        branches.push(BranchEntry { label, target: id });
+    }
     let index: HashMap<Oid, usize> = commits.iter().enumerate().map(|(i, c)| (c.id, i)).collect();
 
     let primary_name = primary_branch(repo, opts.primary.as_deref())?;
@@ -287,6 +304,21 @@ pub fn load(repo: &Repository, opts: &LoadOptions) -> Result<Snapshot> {
                 specs.push(spec(names.get(k - 1).cloned(), p, Some(i)));
             }
         }
+    }
+    // Stashes go last so real branches claim shared commits first. They share
+    // one color.
+    let stash_color = name_color("stash", primary);
+    for (n, &id) in stashes.iter().enumerate() {
+        specs.push(BranchSpec {
+            name: Some(format!("stash@{{{n}}}")),
+            start: id,
+            merge: None,
+            persistence: graph::PERS_OTHER,
+            // A group after all branches: stashes hang off to the right.
+            group: GROUPS + 1,
+            color: stash_color,
+            fork_color: stash_color,
+        });
     }
     let nodes: Vec<Node> = commits
         .iter()
@@ -405,6 +437,58 @@ fn parse_merge(summary: &str) -> (Option<String>, Vec<String>) {
         .map(str::to_string)
         .collect();
     (into, merged)
+}
+
+/// Insert the stash entries (newest first: stash@{0}, stash@{1}, ...) into
+/// `commits`. A stash commit's extra parents (the index and untracked-file
+/// snapshots) are left out, so each stash shows as one commit on top of the
+/// commit it was made on. Each is placed above that commit, at its place in
+/// time order. Returns the stash commit ids.
+fn add_stashes(repo: &Repository, commits: &mut Vec<CommitInfo>) -> Result<Vec<Oid>> {
+    let Ok(reflog) = repo.reflog("refs/stash") else {
+        return Ok(Vec::new());
+    };
+    let mut ids = Vec::new();
+    for entry in reflog.iter() {
+        let id = entry.id_new();
+        let Ok(commit) = repo.find_commit(id) else {
+            continue;
+        };
+        ids.push(id);
+        if commits.iter().any(|c| c.id == id) {
+            continue;
+        }
+        let base = commit.parent_id(0).ok();
+        let author = commit.author();
+        let time = author.when().seconds();
+        let base_pos = base.and_then(|b| commits.iter().position(|c| c.id == b));
+        let by_time = commits
+            .iter()
+            .position(|c| c.time <= time)
+            .unwrap_or(commits.len());
+        let at = base_pos.map_or(by_time, |b| by_time.min(b));
+        commits.insert(
+            at,
+            CommitInfo {
+                id,
+                short: commit
+                    .as_object()
+                    .short_id()?
+                    .as_str()
+                    .unwrap_or("")
+                    .to_string(),
+                parents: base.into_iter().collect(),
+                summary: commit.summary().ok().flatten().unwrap_or("").to_string(),
+                author: author.name().unwrap_or("?").to_string(),
+                email: author.email().unwrap_or("").to_string(),
+                time,
+                offset_min: author.when().offset_minutes(),
+                branch: None,
+                color: 0,
+            },
+        );
+    }
+    Ok(ids)
 }
 
 /// Number of named column groups (main | hotfix, release | develop); other
