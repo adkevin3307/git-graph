@@ -204,6 +204,7 @@ move focus).
 |---|---|
 | `o` | Check out the branch at this commit, or detach HEAD there (asks first; not for stashes) |
 | `y` | Copy the commit hash (OSC 52) |
+| mouse wheel | Scroll (hold `ctrl` to scroll faster) |
 | mouse drag | Select text in a pane; it's copied (OSC 52) when you release |
 | shift + drag | Your terminal's own text selection |
 | `r` | Reload the repository |
@@ -226,9 +227,9 @@ keys do the same thing in all three:
 | `home` / `end` | Line start / end (not top / bottom) |
 | `/`, `n` / `N` | Search, next / previous match |
 | `esc` | Hide the search highlights, then go back |
-| `?` | Help (any key closes it; `j`/`k` scroll it when it doesn't fit) |
+| `?` | Help, in the same window everywhere (`j`/`k` or the wheel scroll it; any other key closes it) |
 | `q`, `ctrl-c` | Quit |
-| mouse wheel | Scroll |
+| mouse wheel | Scroll (`ctrl` + wheel: faster) |
 | mouse drag | Select text and copy it with OSC 52 on release |
 | shift + drag | The terminal's own selection |
 

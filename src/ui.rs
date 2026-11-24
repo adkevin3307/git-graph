@@ -496,7 +496,7 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
             Style::new().fg(Color::Black).bg(Color::Yellow),
         ),
         _ if !app.status.is_empty() => {
-            Line::styled(format!(" {}", app.status), Style::new().fg(Color::Yellow))
+            Line::styled(format!(" {}", app.status), Style::new().fg(YELLOW))
         }
         _ => {
             let keys: &[(&str, &str)] = if app.diff.is_some() && app.focus == Focus::Diff {
@@ -607,6 +607,7 @@ fn draw_help(f: &mut Frame, app: &mut App, scroll: u16) {
         ("Actions", ""),
         ("o", "checkout branch at commit (or detach)"),
         ("y", "copy commit hash (OSC 52)"),
+        ("mouse wheel", "scroll (ctrl: faster)"),
         ("mouse drag", "select text; copied (OSC 52) on release"),
         ("shift-drag", "the terminal's own selection"),
         ("r", "reload repository"),
@@ -619,13 +620,14 @@ fn draw_help(f: &mut Frame, app: &mut App, scroll: u16) {
                 Line::styled(format!(" {k}"), Style::new().fg(ACCENT))
             } else {
                 Line::from(vec![
-                    Span::styled(format!("   {k:<22}"), Style::new().fg(Color::Yellow)),
+                    Span::styled(format!("   {k:<24}"), Style::new().fg(YELLOW)),
                     Span::raw(*v),
                 ])
             }
         })
         .collect();
-    let area = centered(f.area(), 80, lines.len() as u16 + 2);
+    // The same help window as track and monitor.
+    let area = centered(f.area(), 88, lines.len() as u16 + 2);
     let max = (lines.len() as u16).saturating_sub(area.height.saturating_sub(2));
     app.help_max = max;
     let title = if max > 0 {

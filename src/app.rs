@@ -222,9 +222,19 @@ impl App {
     }
 
     pub fn on_mouse(&mut self, ev: MouseEvent) {
+        if let Mode::Help { scroll } = &mut self.mode {
+            match ev.kind {
+                MouseEventKind::ScrollDown => *scroll = (*scroll + 3).min(self.help_max),
+                MouseEventKind::ScrollUp => *scroll = scroll.saturating_sub(3),
+                _ => {}
+            }
+            return;
+        }
         if !matches!(self.mode, Mode::Normal) {
             return;
         }
+        // ctrl + wheel scrolls faster, as in track and monitor.
+        let lines = if ev.modifiers.contains(KeyModifiers::CONTROL) { 15 } else { 3 };
         let (x, y) = (ev.column, ev.row);
         match ev.kind {
             // Pressing starts a selection; the click below still does its usual thing.
@@ -247,8 +257,8 @@ impl App {
             _ => {}
         }
         match ev.kind {
-            MouseEventKind::ScrollDown => self.scroll(3),
-            MouseEventKind::ScrollUp => self.scroll(-3),
+            MouseEventKind::ScrollDown => self.scroll(lines),
+            MouseEventKind::ScrollUp => self.scroll(-lines),
             MouseEventKind::ScrollRight => self.hscroll(HSTEP as isize),
             MouseEventKind::ScrollLeft => self.hscroll(-(HSTEP as isize)),
             MouseEventKind::Down(_) if inside(self.files_area, ev.column, ev.row, 1) => {
@@ -352,7 +362,7 @@ impl App {
         }
         copy_to_clipboard(&text);
         let n = text.chars().count();
-        self.status = format!("Copied {n} character{}", if n == 1 { "" } else { "s" });
+        self.status = format!("Copied {n} character{} to the clipboard", if n == 1 { "" } else { "s" });
     }
 
     fn scroll(&mut self, delta: isize) {
@@ -968,26 +978,26 @@ impl App {
     fn next_match(&mut self, forward: bool, inclusive: bool) {
         if self.matches.is_empty() {
             self.status = match &self.search {
-                None => "No search (press /)".into(),
+                None => "No active search (press / to search)".into(),
                 Some(m) => format!("Pattern not found: {}", m.label()),
             };
             return;
         }
         let cur = self.selected;
-        let target = if forward {
-            self.matches
-                .iter()
-                .copied()
-                .find(|&i| if inclusive { i >= cur } else { i > cur })
-                .unwrap_or(self.matches[0])
+        let found = if forward {
+            self.matches.iter().copied().find(|&i| if inclusive { i >= cur } else { i > cur })
         } else {
-            self.matches
-                .iter()
-                .rev()
-                .copied()
-                .find(|&i| i < cur)
-                .unwrap_or(*self.matches.last().unwrap())
+            self.matches.iter().rev().copied().find(|&i| i < cur)
         };
+        let target = found.unwrap_or_else(|| {
+            if forward {
+                self.status = "Search hit BOTTOM, continuing at TOP".into();
+                self.matches[0]
+            } else {
+                self.status = "Search hit TOP, continuing at BOTTOM".into();
+                *self.matches.last().unwrap()
+            }
+        });
         self.focus = Focus::Graph;
         self.search_hidden = false;
         self.select(target);
