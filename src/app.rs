@@ -177,9 +177,9 @@ impl App {
                 self.selected = 0;
                 self.select(i);
                 self.recompute_matches();
-                self.status = "Reloaded".into();
+                self.status = "Refreshed".into();
             }
-            Err(e) => self.status = format!("Reload failed: {e:#}"),
+            Err(e) => self.status = format!("Refresh failed: {e:#}"),
         }
     }
 
