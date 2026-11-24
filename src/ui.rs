@@ -520,8 +520,9 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
             // keys, back, then help and quit.
             let keys: &[(&str, &str)] = if app.diff.is_some() && app.focus == Focus::Diff {
                 &[
-                    ("j/k", "scroll"),
-                    ("h/l", "scroll sideways"),
+                    ("j/k", "down/up"),
+                    ("g/G", "top/bottom"),
+                    ("h/l", "left/right"),
                     ("tab", "next file"),
                     ("←/→", "panes"),
                     ("esc", "back"),
@@ -530,7 +531,8 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
                 ]
             } else if app.focus == Focus::Commit {
                 &[
-                    ("j/k", "scroll"),
+                    ("j/k", "down/up"),
+                    ("g/G", "top/bottom"),
                     ("/", "search"),
                     ("n/N", "next/prev"),
                     ("←/→", "panes"),
@@ -540,8 +542,9 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
                 ]
             } else if app.diff.is_some() {
                 &[
-                    ("j/k", "switch file"),
-                    ("enter", "focus diff"),
+                    ("j/k", "down/up"),
+                    ("g/G", "top/bottom"),
+                    ("enter", "open"),
                     ("←/→", "panes"),
                     ("esc", "back"),
                     ("?", "help"),
@@ -549,7 +552,8 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
                 ]
             } else {
                 &[
-                    ("j/k", "move"),
+                    ("j/k", "down/up"),
+                    ("g/G", "top/bottom"),
                     ("/", "search"),
                     ("n/N", "next/prev"),
                     ("←/→", "panes"),
@@ -577,49 +581,55 @@ fn centered(area: Rect, w: u16, h: u16) -> Rect {
 }
 
 fn draw_help(f: &mut Frame, app: &mut App, scroll: u16) {
+    // The same sections and wording as track's and monitor's help.
     let rows: &[(&str, &str)] = &[
+        ("Navigation", ""),
+        ("j/k ↓/↑", "down / up"),
+        ("ctrl-d/u", "half page down / up"),
+        ("PgDn/PgUp, ctrl-f/b", "page down / up"),
+        ("g/G", "top / bottom"),
+        ("h/l", "left / right 4 columns (diff)"),
+        ("H/L", "left / right half a page (diff)"),
+        ("home/end", "line start / end (diff)"),
+        (
+            "← / →",
+            "previous / next pane: commits, commit, files, diff",
+        ),
+        ("enter", "open: the files, then a file's diff"),
+        ("Search", ""),
+        (
+            "/",
+            "search (regex, smart case; message, author, hash, refs)",
+        ),
+        ("n / N", "next / previous match"),
+        ("esc", "hide search highlights, then back to the commits"),
         ("Commits", ""),
-        ("j/k ↑/↓", "move the selection"),
-        ("ctrl-d/u", "half page"),
-        ("PgDn/PgUp, ctrl-f/b", "full page"),
-        ("g/G", "first / last commit"),
         ("H", "jump to HEAD"),
         ("p / c", "first parent / child"),
-        ("m", "merged parent (repeat to cycle octopus)"),
-        ("b", "branch, tag & stash picker (type to filter)"),
-        ("Search", ""),
-        ("/", "search message, author, hash, refs (regex)"),
-        ("n / N", "next / previous match; shows hidden highlights"),
-        ("esc", "hide search highlights"),
-        ("Panes", ""),
-        ("← / →", "previous / next pane: graph, commit, files, diff"),
-        ("Commit details", ""),
-        ("j/k, g/G", "scroll / top / bottom"),
-        ("Files", ""),
-        (
-            "j/k, g/G",
-            "select file / first / last; a shown diff follows",
-        ),
-        ("enter", "show the selected file's diff"),
+        ("m", "merged parent (repeat to cycle)"),
+        ("b", "branch, tag & stash picker"),
         ("D", "diff of the whole commit"),
-        ("Diff (replaces the graph)", ""),
-        ("j/k", "scroll up / down"),
-        ("ctrl-d/u", "half page"),
-        ("PgDn/PgUp, ctrl-f/b", "full page"),
-        ("g/G", "top / bottom"),
-        ("h/l, H/L", "scroll sideways (4 columns / half a page)"),
-        ("home / end", "scroll to line start / end"),
-        ("tab / shift-tab", "next / previous file (wraps around)"),
-        ("z", "maximize / restore the diff"),
-        ("esc", "close the diff, back to the graph"),
-        ("Actions", ""),
-        ("o", "checkout branch at commit (or detach)"),
-        ("y", "copy commit hash (OSC 52)"),
-        ("mouse wheel", "scroll (ctrl: faster)"),
-        ("mouse drag", "select text; copied (OSC 52) on release"),
+        ("o", "checkout the branch at the commit (or detach)"),
+        ("y", "copy the commit hash"),
+        ("Diff", ""),
+        ("tab / shift-tab", "next / previous file"),
+        ("z", "maximize / restore"),
+        ("esc", "back to the commits"),
+        ("Input box", ""),
+        ("←/→ home/end ctrl-a/e", "move the cursor"),
+        ("ctrl-u / ctrl-w", "delete to start / previous word"),
+        ("↑/↓", "history (branch picker: select)"),
+        ("enter", "submit"),
+        ("esc, ctrl-c", "cancel"),
+        ("Mouse", ""),
+        ("wheel", "scroll (ctrl: faster)"),
+        ("click", "select a commit, file or pane"),
+        ("drag", "select text; copied on release"),
         ("shift-drag", "the terminal's own selection"),
-        ("r", "reload repository"),
-        ("q", "quit"),
+        ("General", ""),
+        ("r", "refresh (reload the repository)"),
+        ("?", "help"),
+        ("q, ctrl-c", "quit"),
     ];
     let lines: Vec<Line> = rows
         .iter()

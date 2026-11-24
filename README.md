@@ -147,71 +147,82 @@ The focused pane has a highlighted border; `←`/`→` move focus through
 
 ## Keys
 
-Press `?` in the app for this list.
+Press `?` in the app for this list (`j`/`k` or the wheel scroll it when it
+doesn't fit; any other key closes it). The keys and their wording are the
+same in track, monitor and git-graph (see the shared key guideline below).
 
 What `j`/`k`, `g`/`G` and paging do depends on the focused pane (`←`/`→`
-move focus).
+move focus): they move the selection in the commit and file lists (a shown
+diff follows the file), and scroll the commit details and the diff.
 
-**Commits (graph)**
+**Navigation**
 
 | Key | Action |
 |---|---|
-| `j`/`k`, `↓`/`↑` | Move the selection |
-| `ctrl-d`/`ctrl-u`, `PgDn`/`PgUp`, `ctrl-f`/`ctrl-b` | Half / full page |
-| `g` / `G` | First / last commit |
-| `H` | Jump to HEAD |
-| `p` / `c` | First parent / child |
-| `m` | Merged parent; press again to cycle through every parent of an octopus merge |
-| `b` | Branch, tag & stash picker (type to filter, `enter` to jump) |
-| `←` / `→` | Previous / next pane: graph, commit, files, diff |
+| `j`/`k`, `↓`/`↑` | Down / up |
+| `ctrl-d`/`ctrl-u` | Half page down / up |
+| `PgDn`/`PgUp`, `ctrl-f`/`ctrl-b` | Page down / up |
+| `g` / `G` | Top / bottom |
+| `h`/`l` | Left / right 4 columns (diff) |
+| `H`/`L` | Left / right half a page (diff) |
+| `home` / `end` | Line start / end (diff) |
+| `←` / `→` | Previous / next pane: commits, commit, files, diff |
+| `enter` | Open: the files, then a file's diff |
 
 **Search**
 
 | Key | Action |
 |---|---|
-| `/` | Search message, author, email, hash and refs (regex, smart case; selects the first match while typing) |
-| `n` / `N` | Next / previous match; shows hidden highlights |
-| `esc` | Hide the search highlights (the next `esc` focuses the graph) |
+| `/` | Search (regex, smart case; message, author, email, hash, refs) |
+| `n` / `N` | Next / previous match |
+| `esc` | Hide search highlights, then back to the commits |
 
-**Commit details**
-
-| Key | Action |
-|---|---|
-| `j`/`k`, `g`/`G` | Scroll / top / bottom |
-
-**Files**
+**Commits**
 
 | Key | Action |
 |---|---|
-| `j`/`k`, `g`/`G` | Select a file / first / last; if a diff is shown, it follows |
-| `enter` | Show the selected file's diff (from the graph, `enter` focuses the files) |
+| `H` | Jump to HEAD |
+| `p` / `c` | First parent / child |
+| `m` | Merged parent (repeat to cycle through every parent of an octopus merge) |
+| `b` | Branch, tag & stash picker (type to filter, `enter` to jump) |
 | `D` | Diff of the whole commit |
-
-**Diff** (shown in place of the graph)
-
-| Key | Action |
-|---|---|
-| `j`/`k` | Scroll up / down |
-| `ctrl-d`/`ctrl-u`, `PgDn`/`PgUp`, `ctrl-f`/`ctrl-b` | Half / full page |
-| `g` / `G` | Top / bottom |
-| `h` / `l`, `H` / `L` | Scroll sideways (4 columns / half a page) |
-| `home` / `end` | Scroll to line start / end |
-| `tab` / `shift-tab` | Next / previous file, wrapping around |
-| `z` | Maximize / restore the diff |
-| `esc` | Close the diff and return to the graph |
-
-**Actions**
-
-| Key | Action |
-|---|---|
-| `o` | Check out the branch at this commit, or detach HEAD there (asks first; not for stashes) |
+| `o` | Checkout the branch at the commit, or detach HEAD there (asks first; not for stashes) |
 | `y` | Copy the commit hash (OSC 52) |
-| mouse wheel | Scroll (hold `ctrl` to scroll faster) |
-| mouse drag | Select text in a pane; it's copied (OSC 52) when you release |
-| shift + drag | Your terminal's own text selection |
-| `r` | Reload the repository |
-| `?` | Help (`j`/`k` scroll it if it doesn't fit; any other key closes it) |
-| `q` | Quit |
+
+**Diff** (shown in place of the commits)
+
+| Key | Action |
+|---|---|
+| `tab` / `shift-tab` | Next / previous file (wrapping around) |
+| `z` | Maximize / restore |
+| `esc` | Back to the commits |
+
+**Input box** (the `/` box and the branch picker)
+
+| Key | Action |
+|---|---|
+| `←`/`→`, `home`/`end`, `ctrl-a`/`ctrl-e` | Move the cursor |
+| `ctrl-u` / `ctrl-w` | Delete to start / previous word |
+| `↑`/`↓` | History (branch picker: select) |
+| `enter` | Submit |
+| `esc`, `ctrl-c` | Cancel (`backspace` on an empty box too) |
+
+**Mouse**
+
+| Key | Action |
+|---|---|
+| wheel | Scroll (`ctrl`: faster) |
+| click | Select a commit, file or pane |
+| drag | Select text; copied on release (OSC 52) |
+| shift + drag | The terminal's own selection |
+
+**General**
+
+| Key | Action |
+|---|---|
+| `r` | Refresh (reload the repository) |
+| `?` | Help |
+| `q`, `ctrl-c` | Quit |
 
 ### Shared key guideline
 
@@ -220,15 +231,17 @@ keys do the same thing in all three:
 
 | Key | Meaning |
 |---|---|
-| `j`/`k`, `↓`/`↑` | One line down / up |
-| `ctrl-d`/`ctrl-u` | Half a page down / up |
-| `PgDn`/`PgUp`, `ctrl-f`/`ctrl-b` | A full page down / up |
+| `j`/`k`, `↓`/`↑` | Down / up |
+| `ctrl-d`/`ctrl-u` | Half page down / up |
+| `PgDn`/`PgUp`, `ctrl-f`/`ctrl-b` | Page down / up |
 | `g` / `G` | Top / bottom |
-| `h`/`l` | Sideways 4 columns |
-| `H`/`L` | Sideways half a page |
+| `h`/`l` | Left / right 4 columns |
+| `H`/`L` | Left / right half a page |
 | `home` / `end` | Line start / end (not top / bottom) |
-| `/`, `n` / `N` | Search, next / previous match |
-| `esc` | Hide the search highlights, then go back |
+| `/`, `n` / `N` | Search (regex, smart case), next / previous match |
+| `esc` | Hide search highlights, then go back |
+| `w` | Toggle wrap (track, monitor) |
+| `r` | Refresh: redraw the screen, and run the command again (monitor) or reload the repository (git-graph) |
 | `?` | Help, in the same window everywhere (`j`/`k` or the wheel scroll it; any other key closes it) |
 | `q`, `ctrl-c` | Quit (in an input box, `ctrl-c` cancels it like `esc`) |
 | mouse wheel | Scroll (`ctrl` + wheel: faster) |
@@ -274,7 +287,7 @@ All three draw the same frame:
 │ content                                                                       █
 │                                                                               ║
 ╰──────────────────────────────────────────────────────────────────────────────╯
- j/k move  / search  n/N next/prev  tool keys…  esc back  ? help  q quit
+ j/k down/up  g/G top/bottom  / search  n/N next/prev  tool keys…  esc back  ? help  q quit
 ```
 
 - The header starts with the tool's name on a cyan badge; flags appear only

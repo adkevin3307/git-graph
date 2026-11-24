@@ -96,6 +96,9 @@ fn main() -> Result<()> {
 
 fn run(terminal: &mut ratatui::DefaultTerminal, app: &mut app::App) -> Result<()> {
     while !app.quit {
+        if std::mem::take(&mut app.redraw) {
+            terminal.clear()?;
+        }
         terminal.draw(|f| ui::draw(f, app))?;
         if !event::poll(Duration::from_millis(500))? {
             continue;

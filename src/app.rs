@@ -99,6 +99,8 @@ pub struct App {
     /// Scroll offset of the commit details pane, and where it was drawn.
     pub commit_scroll: u16,
     pub commit_area: Rect,
+    /// Clear and redraw the whole screen before the next frame (r: refresh).
+    pub redraw: bool,
     /// How far the help can scroll (set when it is drawn).
     pub help_max: u16,
     /// Where each pane's text was drawn last frame (for mouse selection).
@@ -140,6 +142,7 @@ impl App {
             commit_scroll: 0,
             commit_area: Rect::default(),
             help_max: 0,
+            redraw: false,
             panes: Vec::new(),
             selection: None,
         };
@@ -154,6 +157,13 @@ impl App {
             );
         }
         Ok(app)
+    }
+
+    /// r: reload the repository and redraw the whole screen, like r in track
+    /// and monitor.
+    fn refresh(&mut self) {
+        self.reload();
+        self.redraw = true;
     }
 
     pub fn reload(&mut self) {
@@ -587,7 +597,7 @@ impl App {
             KeyCode::Char('c') => self.child(),
             KeyCode::Char('o') => self.ask_checkout(),
             KeyCode::Char('y') => self.yank(),
-            KeyCode::Char('r') => self.reload(),
+            KeyCode::Char('r') => self.refresh(),
             _ => {}
         }
     }
@@ -610,6 +620,7 @@ impl App {
             KeyCode::Char('c') if ctrl => self.quit = true,
             KeyCode::Char('?') => self.mode = Mode::Help { scroll: 0 },
             KeyCode::Char('y') => self.yank(),
+            KeyCode::Char('r') => return self.refresh(),
             _ => {}
         }
         if self.focus == Focus::Files {
