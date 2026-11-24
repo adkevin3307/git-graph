@@ -141,8 +141,7 @@ git-graph [OPTIONS] [PATH]
 
 On terminals narrower than 120 columns the side panes move below the graph.
 The commit list, the file list and the diff show a scrollbar on their right
-border and the visible range on their bottom border when they don't fit, as
-in track and monitor.
+border when they don't fit, as in track and monitor.
 The focused pane has a highlighted border; `←`/`→` move focus through
 **graph → commit → files → diff**, as in git-igitt.
 
@@ -185,7 +184,7 @@ move focus).
 | Key | Action |
 |---|---|
 | `j`/`k`, `g`/`G` | Select a file / first / last; if a diff is shown, it follows |
-| `enter` / `l` | Show the selected file's diff (from the graph, `enter` focuses the files) |
+| `enter` | Show the selected file's diff (from the graph, `enter` focuses the files) |
 | `D` | Diff of the whole commit |
 
 **Diff** (shown in place of the graph)
@@ -231,14 +230,14 @@ keys do the same thing in all three:
 | `/`, `n` / `N` | Search, next / previous match |
 | `esc` | Hide the search highlights, then go back |
 | `?` | Help, in the same window everywhere (`j`/`k` or the wheel scroll it; any other key closes it) |
-| `q`, `ctrl-c` | Quit |
+| `q`, `ctrl-c` | Quit (in an input box, `ctrl-c` cancels it like `esc`) |
 | mouse wheel | Scroll (`ctrl` + wheel: faster) |
 | mouse drag | Select text and copy it with OSC 52 on release |
 | shift + drag | The terminal's own selection |
 
-Other keys are specific to one tool. Where a view doesn't scroll sideways,
-`h`/`l`/`H`/`L` may do something else there (in `git-graph`'s commit list
-they move between panes and jump to HEAD).
+Other keys are specific to one tool, and no key just repeats another one.
+In `git-graph`'s commit list, which doesn't scroll sideways, `H` jumps to
+HEAD.
 
 ### Shared search
 
@@ -274,17 +273,19 @@ All three draw the same frame:
 ╭ Panel  details ─────────────────────────────────────── /search  current/total ╮
 │ content                                                                       █
 │                                                                               ║
-╰──────────────────────────────────────────────────────────────────── 1-24/812 ╯
+╰──────────────────────────────────────────────────────────────────────────────╯
  j/k move  / search  n/N next/prev  tool keys…  esc back  ? help  q quit
 ```
 
 - The header starts with the tool's name on a cyan badge; flags appear only
   while they are on (e.g. `wrap`, `diff · bell · wrap`).
 - Panels have rounded borders; the focused one is cyan.
-- A panel whose content doesn't fit has a scrollbar on its right border (cyan
-  thumb on a gray track) and the visible range on its bottom border.
+- A panel whose content doesn't fit has a scrollbar on its right border, in
+  the border's color (cyan when the panel is focused). Nothing is drawn over
+  the bottom border.
 - The footer lists keys in the same order everywhere: movement, search, the
-  tool's own keys, `esc` back where it applies, then `? help` and `q quit`.
+  tool's most used keys (`?` lists them all), `esc` back where it applies,
+  then `? help` and `q quit`.
   Keys are cyan and their descriptions gray; on a narrow terminal the tool's
   own keys are dropped first, so help and quit always stay visible. A status
   message (yellow) replaces the hints until the next key.

@@ -29,8 +29,8 @@ pub enum Mode {
     Normal,
     /// The search box is open; what is typed is in `App::editor`.
     Search,
+    /// Branch picker; the filter is typed into `App::editor`.
     Branches {
-        filter: String,
         selected: usize,
     },
     Confirm {
@@ -472,56 +472,17 @@ impl App {
                 // Scroll when the help doesn't fit; any other key closes it.
                 KeyCode::Down | KeyCode::Char('j') => *scroll = (*scroll + 1).min(self.help_max),
                 KeyCode::Up | KeyCode::Char('k') => *scroll = scroll.saturating_sub(1),
-                KeyCode::PageDown | KeyCode::Char(' ') => {
-                    *scroll = (*scroll + 10).min(self.help_max)
-                }
+                KeyCode::PageDown => *scroll = (*scroll + 10).min(self.help_max),
                 KeyCode::PageUp => *scroll = scroll.saturating_sub(10),
-                KeyCode::Home | KeyCode::Char('g') => *scroll = 0,
-                KeyCode::End | KeyCode::Char('G') => *scroll = self.help_max,
+                KeyCode::Char('g') => *scroll = 0,
+                KeyCode::Char('G') => *scroll = self.help_max,
+                KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    self.quit = true
+                }
                 _ => self.mode = Mode::Normal,
             },
             Mode::Search => self.key_search(key),
-            Mode::Branches { filter, selected } => {
-                let visible = branch_matches(&self.snap, filter);
-                match key.code {
-                    KeyCode::Esc => self.mode = Mode::Normal,
-                    KeyCode::Down | KeyCode::Tab => {
-                        *selected = (*selected + 1).min(visible.len().saturating_sub(1))
-                    }
-                    KeyCode::Up | KeyCode::BackTab => *selected = selected.saturating_sub(1),
-                    KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                        *selected = (*selected + 1).min(visible.len().saturating_sub(1))
-                    }
-                    KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                        *selected = selected.saturating_sub(1)
-                    }
-                    KeyCode::Backspace => {
-                        filter.pop();
-                        *selected = 0;
-                    }
-                    KeyCode::Char(c) => {
-                        filter.push(c);
-                        *selected = 0;
-                    }
-                    KeyCode::Enter => {
-                        let target = visible.get(*selected).map(|&i| {
-                            (
-                                self.snap.branches[i].target,
-                                self.snap.branches[i].label.name.clone(),
-                            )
-                        });
-                        self.mode = Mode::Normal;
-                        if let Some((id, name)) = target
-                            && self.select_id(id)
-                        {
-                            self.focus = Focus::Graph;
-                            self.diff = None;
-                            self.status = format!("Jumped to {name}");
-                        }
-                    }
-                    _ => {}
-                }
-            }
+            Mode::Branches { .. } => self.key_branches(key),
             Mode::Confirm { .. } => {
                 let Mode::Confirm { action, .. } = std::mem::replace(&mut self.mode, Mode::Normal)
                 else {
@@ -572,7 +533,7 @@ impl App {
             KeyCode::Char('G') => self.move_by(isize::MAX / 2),
             KeyCode::Right => self.focus_right(),
             KeyCode::Left => self.focus_left(),
-            KeyCode::Enter | KeyCode::Char('l') => match self.focus {
+            KeyCode::Enter => match self.focus {
                 Focus::Graph | Focus::Commit => {
                     if self.detail.as_ref().is_some_and(|d| !d.files.is_empty()) {
                         self.focus = Focus::Files;
@@ -589,7 +550,7 @@ impl App {
             KeyCode::Esc if self.search.is_some() && !self.search_hidden => {
                 self.search_hidden = true
             }
-            KeyCode::Esc | KeyCode::Char('h') => self.focus = Focus::Graph,
+            KeyCode::Esc => self.focus = Focus::Graph,
             KeyCode::Char('D') => {
                 self.open_diff(None);
                 if self.diff.is_some() {
@@ -611,10 +572,8 @@ impl App {
             KeyCode::Char('n') => self.next_match(true, false),
             KeyCode::Char('N') => self.next_match(false, false),
             KeyCode::Char('b') => {
-                self.mode = Mode::Branches {
-                    filter: String::new(),
-                    selected: 0,
-                }
+                self.editor.clear();
+                self.mode = Mode::Branches { selected: 0 }
             }
             KeyCode::Char('H') => {
                 if let Some(h) = self.snap.head
@@ -660,8 +619,7 @@ impl App {
                 KeyCode::Up | KeyCode::Char('k') => self.step_diff_file(-1),
                 KeyCode::Char('g') if n > 0 => self.goto_diff_file(0),
                 KeyCode::Char('G') if n > 0 => self.goto_diff_file(n - 1),
-                KeyCode::Enter | KeyCode::Char('l') => self.focus = Focus::Diff,
-                KeyCode::Char('h') => self.close_diff(),
+                KeyCode::Enter => self.focus = Focus::Diff,
                 _ => {}
             }
             return;
@@ -688,7 +646,7 @@ impl App {
             KeyCode::Char('u') if ctrl => scroll(-half),
             KeyCode::Char('f') if ctrl => scroll(page),
             KeyCode::Char('b') if ctrl => scroll(-page),
-            KeyCode::PageDown | KeyCode::Char(' ') => scroll(page),
+            KeyCode::PageDown => scroll(page),
             KeyCode::PageUp => scroll(-page),
             KeyCode::Char('g') => d.scroll = 0,
             KeyCode::Char('G') => d.scroll = max,
@@ -926,24 +884,57 @@ impl App {
                 self.search_origin = None;
                 return;
             }
-            KeyCode::Backspace => self.editor.backspace(),
-            KeyCode::Delete => self.editor.delete(),
-            KeyCode::Left => self.editor.left(),
-            KeyCode::Right => self.editor.right(),
-            KeyCode::Home => self.editor.home(),
-            KeyCode::End => self.editor.end(),
-            KeyCode::Char('a') if ctrl => self.editor.home(),
-            KeyCode::Char('e') if ctrl => self.editor.end(),
-            KeyCode::Char('u') if ctrl => self.editor.kill_to_start(),
-            KeyCode::Char('w') if ctrl => self.editor.delete_word(),
             KeyCode::Up => self.editor.history_prev(&self.search_history),
             KeyCode::Down => self.editor.history_next(&self.search_history),
-            KeyCode::Char(c) if !ctrl => self.editor.insert(c),
-            _ => {}
+            _ => {
+                edit_input(&mut self.editor, key);
+            }
         }
         if self.editor.text() != before {
             self.preview_search();
         }
+    }
+
+    /// Keys in the branch picker: the filter is edited like the search box,
+    /// ↑/↓ select, enter jumps, and esc (or ctrl-c) cancels.
+    fn key_branches(&mut self, key: KeyEvent) {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let Mode::Branches { mut selected } = self.mode else {
+            return;
+        };
+        let visible = branch_matches(&self.snap, self.editor.text());
+        let before = self.editor.text().to_string();
+        match key.code {
+            KeyCode::Esc => return self.mode = Mode::Normal,
+            KeyCode::Char('c') if ctrl => return self.mode = Mode::Normal,
+            KeyCode::Backspace if self.editor.text().is_empty() => {
+                return self.mode = Mode::Normal;
+            }
+            KeyCode::Down => selected = (selected + 1).min(visible.len().saturating_sub(1)),
+            KeyCode::Up => selected = selected.saturating_sub(1),
+            KeyCode::Enter => {
+                let target = visible.get(selected).map(|&i| {
+                    let b = &self.snap.branches[i];
+                    (b.target, b.label.name.clone())
+                });
+                self.mode = Mode::Normal;
+                if let Some((id, name)) = target
+                    && self.select_id(id)
+                {
+                    self.focus = Focus::Graph;
+                    self.diff = None;
+                    self.status = format!("Jumped to {name}");
+                }
+                return;
+            }
+            _ => {
+                edit_input(&mut self.editor, key);
+            }
+        }
+        if self.editor.text() != before {
+            selected = 0;
+        }
+        self.mode = Mode::Branches { selected };
     }
 
     /// Search while typing: highlight the matches and select the first one at or
@@ -1019,6 +1010,27 @@ impl App {
         self.search_hidden = false;
         self.select(target);
     }
+}
+
+/// Editing keys shared by the search box and the branch picker, the same as in
+/// track's and monitor's input boxes. Returns false for keys it doesn't handle.
+fn edit_input(editor: &mut LineEditor, key: KeyEvent) -> bool {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    match key.code {
+        KeyCode::Backspace => editor.backspace(),
+        KeyCode::Delete => editor.delete(),
+        KeyCode::Left => editor.left(),
+        KeyCode::Right => editor.right(),
+        KeyCode::Home => editor.home(),
+        KeyCode::End => editor.end(),
+        KeyCode::Char('a') if ctrl => editor.home(),
+        KeyCode::Char('e') if ctrl => editor.end(),
+        KeyCode::Char('u') if ctrl => editor.kill_to_start(),
+        KeyCode::Char('w') if ctrl => editor.delete_word(),
+        KeyCode::Char(c) if !ctrl => editor.insert(c),
+        _ => return false,
+    }
+    true
 }
 
 /// What the search box restores on cancel.

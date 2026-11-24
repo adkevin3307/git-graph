@@ -83,7 +83,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         draw_help(f, app, scroll);
     }
     match &app.mode {
-        Mode::Branches { filter, selected } => draw_branches(f, app, filter, *selected),
+        Mode::Branches { selected } => draw_branches(f, app, *selected),
         Mode::Search => draw_search(f, app),
         _ => {}
     }
@@ -239,7 +239,14 @@ fn draw_graph(f: &mut Frame, app: &mut App, area: Rect) {
     }
     f.render_widget(Paragraph::new(lines), inner);
     let rows = app.snap.rows.len();
-    draw_scroll(f, area, app.offset, app.page, rows, app.offset + 1, end);
+    draw_scroll(
+        f,
+        area,
+        app.focus == Focus::Graph,
+        app.offset,
+        app.page,
+        rows,
+    );
     app.panes.push(PaneLayout {
         pane: Pane::Graph,
         area: inner,
@@ -440,16 +447,7 @@ fn draw_files(f: &mut Frame, app: &mut App, area: Rect, focused: bool) {
     app.files_offset = state.offset();
     app.files_area = area;
     let visible = area.height.saturating_sub(2) as usize;
-    let last = (app.files_offset + visible).min(files);
-    draw_scroll(
-        f,
-        area,
-        app.files_offset,
-        visible,
-        files,
-        app.files_offset + 1,
-        last,
-    );
+    draw_scroll(f, area, focused, app.files_offset, visible, files);
     app.panes.push(PaneLayout {
         pane: Pane::Files,
         area: area.inner(Margin::new(1, 1)),
@@ -499,8 +497,7 @@ fn draw_diff(f: &mut Frame, app: &mut App, area: Rect) {
     let hscroll = u16::try_from(col_offset).unwrap_or(u16::MAX);
     f.render_widget(Paragraph::new(lines).scroll((0, hscroll)), inner);
     let height = inner.height as usize;
-    let last = (row_offset + height).min(total);
-    draw_scroll(f, area, row_offset, height, total, row_offset + 1, last);
+    draw_scroll(f, area, app.focus == Focus::Diff, row_offset, height, total);
     app.panes.push(PaneLayout {
         pane: Pane::Diff,
         area: inner,
@@ -525,16 +522,7 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
                 &[
                     ("j/k", "scroll"),
                     ("h/l", "scroll sideways"),
-                    ("home/end", "line start/end"),
                     ("tab", "next file"),
-                    (
-                        "z",
-                        if app.diff_maximized {
-                            "restore"
-                        } else {
-                            "maximize"
-                        },
-                    ),
                     ("←/→", "panes"),
                     ("esc", "back"),
                     ("?", "help"),
@@ -553,7 +541,7 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
             } else if app.diff.is_some() {
                 &[
                     ("j/k", "switch file"),
-                    ("enter/l", "focus diff"),
+                    ("enter", "focus diff"),
                     ("←/→", "panes"),
                     ("esc", "back"),
                     ("?", "help"),
@@ -567,8 +555,6 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
                     ("←/→", "panes"),
                     ("enter", "open"),
                     ("b", "branches"),
-                    ("p/m/c", "parent/merge/child"),
-                    ("o", "checkout"),
                     ("?", "help"),
                     ("q", "quit"),
                 ]
@@ -614,7 +600,7 @@ fn draw_help(f: &mut Frame, app: &mut App, scroll: u16) {
             "j/k, g/G",
             "select file / first / last; a shown diff follows",
         ),
-        ("enter / l", "show the selected file's diff"),
+        ("enter", "show the selected file's diff"),
         ("D", "diff of the whole commit"),
         ("Diff (replaces the graph)", ""),
         ("j/k", "scroll up / down"),
@@ -684,21 +670,21 @@ fn footer_hints(keys: &[(&str, &str)], width: u16) -> Line<'static> {
     Line::from(spans)
 }
 
-/// A scrollbar on the right border of a panel and the visible range (`first`-`last`
-/// of `total`, 1-based) on its bottom border, the same in track, monitor and
-/// git-graph. Nothing is drawn when everything fits.
+/// A scrollbar on the right border of a panel, the same in track, monitor and
+/// git-graph. It takes the border's color (cyan when the panel is focused) and
+/// is drawn only when the content doesn't fit.
 fn draw_scroll(
     f: &mut Frame,
     panel: Rect,
+    focused: bool,
     offset: usize,
     visible: usize,
     total: usize,
-    first: usize,
-    last: usize,
 ) {
     if total <= visible || panel.height < 3 {
         return;
     }
+    let style = Style::new().fg(if focused { ACCENT } else { DIM });
     let mut state = ScrollbarState::new(total - visible)
         .position(offset)
         .viewport_content_length(visible);
@@ -706,31 +692,19 @@ fn draw_scroll(
         Scrollbar::new(ScrollbarOrientation::VerticalRight)
             .begin_symbol(None)
             .end_symbol(None)
-            .thumb_style(Style::new().fg(ACCENT))
-            .track_style(Style::new().fg(DIM)),
+            .thumb_style(style)
+            .track_style(style),
         panel.inner(Margin {
             vertical: 1,
             horizontal: 0,
         }),
         &mut state,
     );
-    let range = Line::styled(format!(" {first}-{last}/{total} "), Style::new().fg(DIM));
-    let bottom = Rect {
-        y: panel.bottom() - 1,
-        height: 1,
-        ..panel
-    };
-    f.render_widget(
-        range.right_aligned(),
-        bottom.inner(Margin {
-            vertical: 0,
-            horizontal: 1,
-        }),
-    );
 }
 
 /// Branch, tag & stash picker: the shared input box with the list below it.
-fn draw_branches(f: &mut Frame, app: &App, filter: &str, selected: usize) {
+fn draw_branches(f: &mut Frame, app: &App, selected: usize) {
+    let filter = app.editor.text();
     let idx = branch_matches(&app.snap, filter);
     let info = Span::styled(
         format!("{}/{}", idx.len(), app.snap.branches.len()),
@@ -741,7 +715,7 @@ fn draw_branches(f: &mut Frame, app: &App, filter: &str, selected: usize) {
         "Branches",
         "\u{e725}",
         filter,
-        filter.len(),
+        app.editor.cursor(),
         Some(info),
         &[("↑/↓", "select"), ("enter", "jump"), ("esc", "cancel")],
     );
