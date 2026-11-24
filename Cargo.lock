@@ -578,6 +578,7 @@ dependencies = [
  "clap",
  "git2",
  "ratatui",
+ "unicode-width",
 ]
 
 [[package]]

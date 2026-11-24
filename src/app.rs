@@ -2,10 +2,13 @@ use std::io::Write;
 
 use anyhow::Result;
 use git2::{Oid, Repository};
-use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
+use ratatui::crossterm::event::{
+    KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+};
 use ratatui::layout::Rect;
 
 use crate::repo::{self, CommitDetail, DiffLine, LoadOptions, RefKind, Snapshot};
+use crate::selection::{Pane, PaneLayout, Selection};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
@@ -94,6 +97,10 @@ pub struct App {
     pub commit_area: Rect,
     /// How far the help can scroll (set when it is drawn).
     pub help_max: u16,
+    /// Where each pane's text was drawn last frame (for mouse selection).
+    pub panes: Vec<PaneLayout>,
+    /// Text being selected with the mouse.
+    pub selection: Option<Selection>,
 }
 
 impl App {
@@ -126,6 +133,8 @@ impl App {
             commit_scroll: 0,
             commit_area: Rect::default(),
             help_max: 0,
+            panes: Vec::new(),
+            selection: None,
         };
         if let Some(i) = app.snap.head.and_then(|h| app.snap.index.get(&h).copied()) {
             app.select(i);
@@ -209,6 +218,27 @@ impl App {
         if !matches!(self.mode, Mode::Normal) {
             return;
         }
+        let (x, y) = (ev.column, ev.row);
+        match ev.kind {
+            // Pressing starts a selection; the click below still does its usual thing.
+            MouseEventKind::Down(MouseButton::Left) => {
+                self.status.clear();
+                self.selection = self
+                    .panes
+                    .iter()
+                    .find(|p| p.contains(x, y))
+                    .map(|p| Selection::new(p.pane, p.content_pos(x, y)));
+            }
+            MouseEventKind::Drag(MouseButton::Left) if self.selection.is_some() => {
+                self.drag_selection(x, y);
+                return;
+            }
+            MouseEventKind::Up(MouseButton::Left) if self.selection.is_some() => {
+                self.finish_selection();
+                return;
+            }
+            _ => {}
+        }
         match ev.kind {
             MouseEventKind::ScrollDown => self.scroll(3),
             MouseEventKind::ScrollUp => self.scroll(-3),
@@ -250,6 +280,72 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    fn pane_layout(&self, pane: Pane) -> Option<PaneLayout> {
+        self.panes.iter().find(|p| p.pane == pane).copied()
+    }
+
+    fn drag_selection(&mut self, x: u16, y: u16) {
+        let Some(sel) = &self.selection else { return };
+        let pane = sel.pane;
+        // Dragging past the top or bottom edge scrolls the panes that scroll freely.
+        if let Some(layout) = self.pane_layout(pane) {
+            let delta = if y < layout.area.y {
+                -1
+            } else if y >= layout.area.bottom() {
+                1
+            } else {
+                0
+            };
+            match pane {
+                _ if delta == 0 => {}
+                Pane::Commit => self.scroll_commit(delta),
+                Pane::Diff if self.diff.is_some() => self.scroll(delta),
+                _ => {}
+            }
+        }
+        if let Some(sel) = &mut self.selection {
+            sel.dragged = true;
+            // Resolved after the next layout, which reflects the scrolling above
+            sel.pending = Some((x, y));
+        }
+    }
+
+    /// Moves the selection cursor to the latest drag position, using the last layout.
+    pub fn resolve_drag(&mut self) {
+        let Some(sel) = &self.selection else { return };
+        let (Some((x, y)), Some(layout)) = (sel.pending, self.pane_layout(sel.pane)) else {
+            return;
+        };
+        if let Some(sel) = &mut self.selection {
+            sel.cursor = layout.content_pos(x, y);
+            sel.pending = None;
+        }
+    }
+
+    /// The full text of a content row of the selection's pane.
+    pub fn selection_row_text(&self, sel: &Selection, row: usize) -> Option<String> {
+        match sel.pane {
+            Pane::Diff => self.diff.as_ref()?.lines.get(row).map(|l| l.text.clone()),
+            _ => sel.rows.get(&row).cloned(),
+        }
+    }
+
+    /// Copies the selected text to the clipboard.
+    fn finish_selection(&mut self) {
+        self.resolve_drag();
+        let Some(sel) = self.selection.take() else { return };
+        if !sel.dragged {
+            return;
+        }
+        let text = sel.text(|row| self.selection_row_text(&sel, row));
+        if text.is_empty() {
+            return;
+        }
+        copy_to_clipboard(&text);
+        let n = text.chars().count();
+        self.status = format!("Copied {n} character{}", if n == 1 { "" } else { "s" });
     }
 
     fn scroll(&mut self, delta: isize) {
@@ -343,6 +439,7 @@ impl App {
     }
 
     pub fn on_key(&mut self, key: KeyEvent) {
+        self.selection = None;
         match &mut self.mode {
             Mode::Normal => self.key_normal(key),
             Mode::Help { scroll } => match key.code {
@@ -823,9 +920,7 @@ impl App {
             return;
         };
         let hash = c.id.to_string();
-        let seq = format!("\x1b]52;c;{}\x07", base64(hash.as_bytes()));
-        let mut out = std::io::stdout();
-        let _ = out.write_all(seq.as_bytes()).and_then(|_| out.flush());
+        copy_to_clipboard(&hash);
         self.status = format!("Copied {hash}");
     }
 
@@ -910,6 +1005,13 @@ pub fn branch_matches(snap: &Snapshot, filter: &str) -> Vec<usize> {
         .filter(|(_, b)| b.label.name.to_lowercase().contains(&f))
         .map(|(i, _)| i)
         .collect()
+}
+
+/// Puts `text` on the system clipboard with the OSC 52 terminal escape.
+fn copy_to_clipboard(text: &str) {
+    let seq = format!("\x1b]52;c;{}\x07", base64(text.as_bytes()));
+    let mut out = std::io::stdout();
+    let _ = out.write_all(seq.as_bytes()).and_then(|_| out.flush());
 }
 
 fn base64(data: &[u8]) -> String {

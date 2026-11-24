@@ -1,6 +1,7 @@
 mod app;
 mod graph;
 mod repo;
+mod selection;
 mod ui;
 
 use std::path::PathBuf;

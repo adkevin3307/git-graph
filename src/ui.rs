@@ -1,6 +1,7 @@
 use chrono::{DateTime, FixedOffset, Local, TimeZone};
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::buffer::Buffer;
+use ratatui::layout::{Constraint, Layout, Margin, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
@@ -10,6 +11,7 @@ use ratatui::widgets::{
 use crate::app::{App, Focus, Mode, branch_matches};
 use crate::graph::Cell;
 use crate::repo::{DiffKind, RefKind};
+use crate::selection::{self, Pane, PaneLayout};
 
 // Fixed RGB colors (not terminal theme colors, which vary and can be dark,
 // e.g. "bright blue" in Windows Terminal) chosen to stay legible on dark
@@ -43,6 +45,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         Constraint::Length(1),
     ])
     .areas(f.area());
+    app.panes.clear();
     draw_header(f, app, header);
 
     let wide = main.width >= 120;
@@ -70,6 +73,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         draw_side(f, app, side, wide);
     }
     draw_footer(f, app, footer);
+    draw_selection(f.buffer_mut(), app);
 
     if let Mode::Help { scroll } = app.mode {
         draw_help(f, app, scroll);
@@ -232,6 +236,29 @@ fn draw_graph(f: &mut Frame, app: &mut App, area: Rect) {
         lines.push(line);
     }
     f.render_widget(Paragraph::new(lines), inner);
+    app.panes.push(PaneLayout {
+        pane: Pane::Graph,
+        area: inner,
+        row_offset: app.offset,
+        col_offset: 0,
+    });
+}
+
+/// Records the selected pane's rows and highlights the selection.
+fn draw_selection(buf: &mut Buffer, app: &mut App) {
+    app.resolve_drag();
+    let Some(mut sel) = app.selection.take() else { return };
+    if let Some(layout) = app.panes.iter().find(|p| p.pane == sel.pane).copied() {
+        if sel.pane != Pane::Diff {
+            let a = layout.area;
+            for y in a.y..a.bottom() {
+                let row = layout.row_offset + (y - a.y) as usize;
+                sel.rows.insert(row, selection::screen_row(buf, a, y));
+            }
+        }
+        selection::highlight(buf, &layout, &sel, |row| app.selection_row_text(&sel, row));
+    }
+    app.selection = Some(sel);
 }
 
 fn ref_style(name: &str, kind: RefKind, lane_color: usize) -> (String, Style) {
@@ -339,6 +366,12 @@ fn draw_side(f: &mut Frame, app: &mut App, area: Rect, wide: bool) {
         info,
     );
     app.commit_area = info;
+    app.panes.push(PaneLayout {
+        pane: Pane::Commit,
+        area: info.inner(Margin::new(1, 1)),
+        row_offset: app.commit_scroll as usize,
+        col_offset: 0,
+    });
 
     draw_files(f, app, files, app.focus == Focus::Files);
 }
@@ -399,6 +432,12 @@ fn draw_files(f: &mut Frame, app: &mut App, area: Rect, focused: bool) {
     f.render_stateful_widget(list, area, &mut state);
     app.files_offset = state.offset();
     app.files_area = area;
+    app.panes.push(PaneLayout {
+        pane: Pane::Files,
+        area: area.inner(Margin::new(1, 1)),
+        row_offset: app.files_offset,
+        col_offset: 0,
+    });
 }
 
 fn draw_diff(f: &mut Frame, app: &mut App, area: Rect) {
@@ -438,8 +477,15 @@ fn draw_diff(f: &mut Frame, app: &mut App, area: Rect) {
             Line::styled(l.text.clone(), st)
         })
         .collect();
-    let hscroll = u16::try_from(d.hscroll).unwrap_or(u16::MAX);
+    let (row_offset, col_offset) = (d.scroll, d.hscroll);
+    let hscroll = u16::try_from(col_offset).unwrap_or(u16::MAX);
     f.render_widget(Paragraph::new(lines).scroll((0, hscroll)), inner);
+    app.panes.push(PaneLayout {
+        pane: Pane::Diff,
+        area: inner,
+        row_offset,
+        col_offset,
+    });
 }
 
 fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
@@ -558,6 +604,8 @@ fn draw_help(f: &mut Frame, app: &mut App, scroll: u16) {
         ("Actions", ""),
         ("o", "checkout branch at commit (or detach)"),
         ("y", "copy commit hash (OSC 52)"),
+        ("mouse drag", "select text; copied (OSC 52) on release"),
+        ("shift-drag", "the terminal's own selection"),
         ("r", "reload repository"),
         ("q", "quit"),
     ];

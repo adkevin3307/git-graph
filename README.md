@@ -65,7 +65,8 @@ graph that you can browse, search and diff from the keyboard.
   confirmation; refuses to overwrite local changes.
 - **Copy a commit hash** to the clipboard via the OSC 52 terminal escape
   (works over SSH in most modern terminals).
-- **Mouse support**: scroll, click commits, files and panes.
+- **Mouse support**: scroll, click commits, files and panes, and drag to
+  select text in any pane and copy it (see [Copying text](#copying-text)).
 
 ## Install
 
@@ -120,7 +121,7 @@ git-graph [OPTIONS] [PATH]
 | `-m, --main <BRANCH>` | Trunk branch: leftmost column and color 0 (default: first of `main`, `master`, `trunk`, `develop`, `origin/main`, `origin/master`) |
 | `--no-compact` | Give every branch connector its own row instead of sharing free commit rows (like git-igitt's `--sparse`) |
 | `--no-stash` | Don't show stash entries |
-| `--no-mouse` | Disable mouse support, so the terminal's own text selection works |
+| `--no-mouse` | Disable mouse support, so plain drag uses the terminal's own text selection |
 | `--print` | Print the graph to stdout instead of starting the TUI |
 
 ## Layout
@@ -202,9 +203,24 @@ move focus).
 |---|---|
 | `o` | Check out the branch at this commit, or detach HEAD there (asks first; not for stashes) |
 | `y` | Copy the commit hash (OSC 52) |
+| mouse drag | Select text in a pane; it's copied (OSC 52) when you release |
+| shift + drag | Your terminal's own text selection |
 | `r` | Reload the repository |
 | `?` | Help (`j`/`k` scroll it if it doesn't fit; any other key closes it) |
 | `q` | Quit |
+
+## Copying text
+
+Drag over a pane (commits, commit details, files or diff) to select text;
+the selection stays within the pane where it started. Dragging past the top
+or bottom edge scrolls the commit details and the diff. When you release the
+button, the text is copied to the system clipboard with OSC 52, like `y`
+does for a commit hash; in the diff, whole lines are copied even when they
+are scrolled sideways. Inside tmux, run `tmux set -s set-clipboard on`.
+
+Shift + drag (Option + drag in iTerm2) still gives your terminal's own
+selection, or start `git-graph --no-mouse` to leave the mouse to the
+terminal.
 
 ## How the graph is drawn
 
@@ -269,6 +285,7 @@ cargo clippy
 | `src/repo.rs` | Loading history, refs and branch specs with git2; commit details, diffs, checkout |
 | `src/app.rs` | Application state and key/mouse handling |
 | `src/ui.rs` | Rendering with ratatui |
+| `src/selection.rs` | Mouse text selection and copying |
 | `src/main.rs` | Command-line options, terminal setup, `--print` |
 
 `git-graph --print` is handy for checking layout changes: it prints the same
