@@ -9,7 +9,8 @@ use std::collections::BTreeMap;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Color;
-use unicode_width::UnicodeWidthChar;
+use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::UnicodeWidthStr;
 
 const SELECTION_BG: Color = Color::Rgb(70, 90, 130);
 
@@ -42,8 +43,9 @@ impl PaneLayout {
     /// Content (row, column) under terminal cell (x, y), clamped to the area.
     pub fn content_pos(&self, x: u16, y: u16) -> (usize, usize) {
         let a = self.area;
-        let x = x.clamp(a.x, a.right().saturating_sub(1));
-        let y = y.clamp(a.y, a.bottom().saturating_sub(1));
+        // `.max`: a pane shrunk to nothing mid-drag must not make min > max
+        let x = x.clamp(a.x, a.right().saturating_sub(1).max(a.x));
+        let y = y.clamp(a.y, a.bottom().saturating_sub(1).max(a.y));
         (
             self.row_offset + (y - a.y) as usize,
             self.col_offset + (x - a.x) as usize,
@@ -118,21 +120,18 @@ impl Selection {
     }
 }
 
-fn char_width(c: char) -> usize {
-    c.width().unwrap_or(0)
-}
-
-/// The characters of `text` within display columns `[from, to)`.
+/// The characters of `text` within display columns `[from, to)`, measured per
+/// grapheme cluster the way ratatui draws them.
 pub fn slice_columns(text: &str, from: usize, to: usize) -> String {
     let mut out = String::new();
     let mut col = 0;
-    for c in text.chars() {
+    for g in text.graphemes(true) {
         if col >= to {
             break;
         }
-        let w = char_width(c);
+        let w = g.width();
         if col < to && col + w.max(1) > from {
-            out.push(c);
+            out.push_str(g);
         }
         col += w;
     }
@@ -146,7 +145,7 @@ pub fn screen_row(buf: &Buffer, area: Rect, y: u16) -> String {
     while x < area.right() {
         let sym = buf[(x, y)].symbol();
         out.push_str(sym);
-        let w: usize = sym.chars().map(char_width).sum();
+        let w = sym.width();
         x += w.max(1) as u16;
     }
     out
@@ -166,7 +165,7 @@ pub fn highlight(
         let Some((from, to)) = sel.columns(row) else {
             continue;
         };
-        let text_end = row_text(row).map_or(0, |t| t.trim_end().chars().map(char_width).sum());
+        let text_end = row_text(row).map_or(0, |t| t.trim_end().width());
         let to = to.min(text_end.max(from + 1));
         for x in a.x..a.right() {
             let col = layout.col_offset + (x - a.x) as usize;
@@ -195,6 +194,18 @@ mod tests {
         assert_eq!(text, "line\nsecond\nthird");
         // A plain click selects nothing.
         assert_eq!(Selection::new(Pane::Diff, (0, 0)).columns(0), None);
+    }
+
+    #[test]
+    fn empty_pane_does_not_panic() {
+        let layout = PaneLayout {
+            pane: Pane::Files,
+            area: Rect::new(5, 4, 0, 0),
+            row_offset: 2,
+            col_offset: 1,
+        };
+        assert_eq!(layout.content_pos(9, 9), (2, 1));
+        assert_eq!(layout.content_pos(0, 0), (2, 1));
     }
 
     #[test]

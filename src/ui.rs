@@ -8,6 +8,8 @@ use ratatui::widgets::{
     Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph, Scrollbar,
     ScrollbarOrientation, ScrollbarState, Wrap,
 };
+use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::UnicodeWidthStr;
 
 use crate::app::{App, Focus, Mode, branch_matches};
 use crate::graph::Cell;
@@ -90,27 +92,28 @@ pub fn draw(f: &mut Frame, app: &mut App) {
 }
 
 fn draw_header(f: &mut Frame, app: &App, area: Rect) {
-    let mut spans = vec![
-        Span::styled(" git-graph ", Style::new().bg(ACCENT).fg(Color::Black)),
-        Span::raw(" "),
-        Span::styled(short_path(&app.snap.workdir), Style::new()),
+    let mut status = vec![
         Span::styled("  on ", Style::new().fg(DIM)),
         Span::styled(app.snap.head_name.clone(), Style::new().fg(PALETTE[0])),
     ];
     if let Some(p) = &app.snap.primary {
-        spans.push(Span::styled(format!("  trunk: {p}"), Style::new().fg(DIM)));
+        status.push(Span::styled(format!("  trunk: {p}"), Style::new().fg(DIM)));
     }
-    let count = format!(
-        "{}/{}{} ",
-        app.selected + 1,
-        app.snap.commits.len(),
+    // Like track's line count and monitor's host and clock: the position in the history
+    let n = app.snap.commits.len();
+    let right = format!(
+        "{}/{n}{} ",
+        if n == 0 { 0 } else { app.selected + 1 },
         if app.snap.truncated { "+" } else { "" }
     );
-    let used: usize = spans.iter().map(|s| s.width()).sum();
-    let pad = (area.width as usize).saturating_sub(used + count.len());
-    spans.push(Span::raw(" ".repeat(pad)));
-    spans.push(Span::styled(count, Style::new().fg(DIM)));
-    f.render_widget(Line::from(spans), area);
+    let line = header(
+        "git-graph",
+        &short_path(&app.snap.workdir),
+        status,
+        right,
+        area.width,
+    );
+    f.render_widget(line, area);
 }
 
 fn panel(title: &str, focused: bool) -> Block<'_> {
@@ -136,8 +139,6 @@ fn draw_graph(f: &mut Frame, app: &mut App, area: Rect) {
     let inner = block.inner(area);
     f.render_widget(block, area);
     app.page = inner.height.max(1) as usize;
-    app.list_top = inner.y;
-    app.list_right = area.x + area.width;
     // Re-clamp in case the viewport changed size.
     if let Some(&sel_row) = app.snap.commit_row.get(app.selected)
         && sel_row >= app.offset + app.page
@@ -204,21 +205,20 @@ fn draw_graph(f: &mut Frame, app: &mut App, area: Rect) {
         }
         // Right-aligned author + relative date; the summary is truncated to fit.
         let meta = if show_author {
-            format!(
-                " {:>18} · {:>7} ",
-                truncate(&c.author, 18),
-                relative(now - c.time)
-            )
+            // Padded by display width: an author name in CJK is twice as wide
+            let author = fit(&c.author, 18);
+            let pad = " ".repeat(18usize.saturating_sub(text_width(&author)));
+            format!(" {pad}{author} · {:>7} ", relative(now - c.time))
         } else {
             format!(" {:>7} ", relative(now - c.time))
         };
         let used: usize = spans.iter().map(|s| s.width()).sum();
         let avail = inner.width as usize;
-        let meta_w = meta.chars().count();
+        let meta_w = text_width(&meta);
         let room = avail.saturating_sub(used + meta_w);
         if room >= 12 {
-            let summary = truncate(&c.summary, room);
-            let pad = room - summary.chars().count();
+            let summary = fit(&c.summary, room);
+            let pad = room.saturating_sub(text_width(&summary));
             let search = app.search.as_ref().filter(|_| is_match);
             spans.extend(highlight(&summary, search, summary_style));
             spans.push(Span::raw(" ".repeat(pad)));
@@ -371,10 +371,15 @@ fn draw_side(f: &mut Frame, app: &mut App, area: Rect, wide: bool) {
             lines.push(Line::raw(l.to_string()));
         }
     }
+    let text = Paragraph::new(lines).wrap(Wrap { trim: false });
+    // Scroll limit from the wrapped height (long messages wrap), so G reaches the end
+    // and nothing scrolls past it
+    let rows = text.line_count(info.width.saturating_sub(2));
+    let rows = u16::try_from(rows).unwrap_or(u16::MAX);
+    app.commit_max = rows.saturating_sub(info.height.saturating_sub(2));
+    app.commit_scroll = app.commit_scroll.min(app.commit_max);
     f.render_widget(
-        Paragraph::new(lines)
-            .wrap(Wrap { trim: false })
-            .scroll((app.commit_scroll, 0))
+        text.scroll((app.commit_scroll, 0))
             .block(panel("Commit", app.focus == Focus::Commit)),
         info,
     );
@@ -529,6 +534,16 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
                     ("?", "help"),
                     ("q", "quit"),
                 ]
+            } else if app.focus == Focus::Commit && app.diff.is_some() {
+                // Next to an open diff, search isn't available (it works on the list)
+                &[
+                    ("j/k", "down/up"),
+                    ("g/G", "top/bottom"),
+                    ("←/→", "panes"),
+                    ("esc", "back"),
+                    ("?", "help"),
+                    ("q", "quit"),
+                ]
             } else if app.focus == Focus::Commit {
                 &[
                     ("j/k", "down/up"),
@@ -601,11 +616,11 @@ fn draw_help(f: &mut Frame, app: &mut App, scroll: u16) {
             "/",
             "search (regex, smart case; message, author, hash, refs)",
         ),
-        ("n / N", "next / previous match"),
+        ("n/N", "next / previous match"),
         ("esc", "hide search highlights, then back to the commits"),
         ("Commits", ""),
         ("H", "jump to HEAD"),
-        ("p / c", "first parent / child"),
+        ("p/c", "first parent / child"),
         ("m", "merged parent (repeat to cycle)"),
         ("b", "branch, tag & stash picker"),
         ("D", "diff of the whole commit"),
@@ -664,13 +679,20 @@ fn draw_help(f: &mut Frame, app: &mut App, scroll: u16) {
 
 /// Footer key hints, the same in track, monitor and git-graph: movement, search,
 /// the tool's own keys, then `? help` and `q quit` last. When the line is too
-/// narrow, the tool's own keys are dropped from the end first, so help and quit
-/// always stay visible.
+/// narrow, the tool's own keys are dropped from the end first, so help and quit stay
+/// visible as long as they fit.
 fn footer_hints(keys: &[(&str, &str)], width: u16) -> Line<'static> {
     let hint_width = |(k, v): &(&str, &str)| Line::raw(*k).width() + Line::raw(*v).width() + 3;
+    // A leading space and two between hints: no trailing spaces needed
+    let needed =
+        |keys: &[(&str, &str)]| keys.iter().map(hint_width).sum::<usize>().saturating_sub(1);
     let mut keys = keys.to_vec();
-    while keys.len() > 2 && 1 + keys.iter().map(hint_width).sum::<usize>() > width as usize {
+    while keys.len() > 2 && needed(&keys) > width as usize {
         keys.remove(keys.len() - 3);
+    }
+    // Too narrow even for help and quit: quit alone, then nothing (never half a hint)
+    while !keys.is_empty() && needed(&keys) > width as usize {
+        keys.remove(0);
     }
     let mut spans = vec![Span::raw(" ")];
     for (k, v) in keys {
@@ -925,14 +947,61 @@ fn short_path(p: &str) -> String {
     .join("/")
 }
 
-fn truncate(s: &str, n: usize) -> String {
-    if s.chars().count() <= n {
-        s.to_string()
-    } else if n == 0 {
-        String::new()
-    } else {
-        format!("{}…", s.chars().take(n - 1).collect::<String>())
+/// Display width of `s`, per grapheme cluster as ratatui draws it.
+fn text_width(s: &str) -> usize {
+    s.graphemes(true).map(UnicodeWidthStr::width).sum()
+}
+
+/// The header line, the same in track, monitor and git-graph: the tool's name, then
+/// `source` (cut short with "…" when space runs out), then `status`, and `right` at the
+/// right edge when everything fits.
+fn header(
+    name: &str,
+    source: &str,
+    status: Vec<Span<'static>>,
+    right: String,
+    width: u16,
+) -> Line<'static> {
+    let width = width as usize;
+    let badge = format!(" {name} ");
+    let fixed = badge.width() + 1 + status.iter().map(Span::width).sum::<usize>();
+    let mut spans = vec![
+        Span::styled(badge, Style::new().bg(ACCENT).fg(Color::Black)),
+        Span::raw(" "),
+        Span::raw(fit(source, width.saturating_sub(fixed))),
+    ];
+    spans.extend(status);
+    let used: usize = spans.iter().map(Span::width).sum();
+    let right_width = right.width();
+    if used + 1 + right_width <= width {
+        spans.push(Span::raw(" ".repeat(width - used - right_width)));
+        spans.push(Span::styled(right, Style::new().fg(DIM)));
     }
+    Line::from(spans)
+}
+
+/// `text` cut to at most `width` display columns, ending in "…" when it was cut. Widths
+/// are measured per grapheme cluster, the way ratatui draws them. The same in track,
+/// monitor and git-graph.
+fn fit(text: &str, width: usize) -> String {
+    let total: usize = text.graphemes(true).map(UnicodeWidthStr::width).sum();
+    if total <= width {
+        return text.to_string();
+    }
+    let mut out = String::new();
+    let mut used = 0;
+    for g in text.graphemes(true) {
+        let w = g.width();
+        if used + w + 1 > width {
+            break;
+        }
+        out.push_str(g);
+        used += w;
+    }
+    if width > 0 {
+        out.push('…');
+    }
+    out
 }
 
 fn relative(secs: i64) -> String {

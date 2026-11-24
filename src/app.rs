@@ -1,5 +1,3 @@
-use std::io::Write;
-
 use anyhow::Result;
 use git2::{Oid, Repository};
 use ratatui::crossterm::event::{
@@ -84,8 +82,6 @@ pub struct App {
     /// Height of the graph list in rows, updated on draw.
     pub page: usize,
     /// Top of the graph list area on screen (for mouse clicks).
-    pub list_top: u16,
-    pub list_right: u16,
     /// Cycle state for `m`: (merge commit, parent index last visited,
     /// commit selected after that jump).
     merge_cycle: Option<(Oid, usize, Oid)>,
@@ -98,6 +94,8 @@ pub struct App {
     pub diff_maximized: bool,
     /// Scroll offset of the commit details pane, and where it was drawn.
     pub commit_scroll: u16,
+    /// Largest useful `commit_scroll`, from the last draw.
+    pub commit_max: u16,
     pub commit_area: Rect,
     /// Clear and redraw the whole screen before the next frame (r: refresh).
     pub redraw: bool,
@@ -132,14 +130,13 @@ impl App {
             status: String::new(),
             quit: false,
             page: 20,
-            list_top: 0,
-            list_right: 0,
             merge_cycle: None,
             files_area: Rect::default(),
             files_offset: 0,
             diff_area: Rect::default(),
             diff_maximized: false,
             commit_scroll: 0,
+            commit_max: 0,
             commit_area: Rect::default(),
             help_max: 0,
             redraw: false,
@@ -171,10 +168,16 @@ impl App {
         match repo::load(&self.repo, &self.opts) {
             Ok(s) => {
                 self.snap = s;
-                let i = current
-                    .and_then(|id| self.snap.index.get(&id).copied())
-                    .unwrap_or(0);
-                self.selected = 0;
+                let found = current.and_then(|id| self.snap.index.get(&id).copied());
+                if found.is_none() {
+                    // The selected commit is gone (amend, rebase, deleted branch): its
+                    // details and diff no longer apply
+                    self.detail = None;
+                    self.diff = None;
+                }
+                // Still there: keep its details (a commit never changes)
+                let i = found.unwrap_or(0);
+                self.selected = i;
                 self.select(i);
                 self.recompute_matches();
                 self.status = "Refreshed".into();
@@ -292,13 +295,14 @@ impl App {
             {
                 self.focus = Focus::Diff;
             }
-            MouseEventKind::Down(_)
-                if self.diff.is_none()
-                    && ev.column < self.list_right
-                    && ev.row >= self.list_top =>
-            {
-                // A connector row selects the commit above it.
-                let r = self.offset + (ev.row - self.list_top) as usize;
+            MouseEventKind::Down(_) if self.diff.is_none() => {
+                // Only clicks on the commit list itself select a commit (not its
+                // border, the footer or another pane's border). A connector row
+                // selects the commit above it.
+                let Some(list) = self.pane_layout(Pane::Graph).filter(|p| p.contains(x, y)) else {
+                    return;
+                };
+                let r = list.row_offset + (y - list.area.y) as usize;
                 let rows = &self.snap.rows;
                 let commit = rows[..rows.len().min(r + 1)]
                     .iter()
@@ -376,12 +380,7 @@ impl App {
         if text.is_empty() {
             return;
         }
-        copy_to_clipboard(&text);
-        let n = text.chars().count();
-        self.status = format!(
-            "Copied {n} character{} to the clipboard",
-            if n == 1 { "" } else { "s" }
-        );
+        self.status = crate::terminal::copy(&mut std::io::stdout(), &text);
     }
 
     fn scroll(&mut self, delta: isize) {
@@ -451,13 +450,8 @@ impl App {
     }
 
     fn scroll_commit(&mut self, delta: isize) {
-        let lines = self
-            .detail
-            .as_ref()
-            .map_or(0, |d| d.message.lines().count())
-            + 8;
-        let v = (self.commit_scroll as isize + delta).clamp(0, lines as isize - 1);
-        self.commit_scroll = v as u16;
+        let v = (self.commit_scroll as isize).saturating_add(delta);
+        self.commit_scroll = v.clamp(0, self.commit_max as isize) as u16;
     }
 
     fn move_by(&mut self, delta: isize) {
@@ -722,9 +716,10 @@ impl App {
         };
         match repo::file_diff(&self.repo, detail.id, f) {
             Ok(lines) => {
+                // In display columns: CJK text is twice as wide as its characters
                 let max_width = lines
                     .iter()
-                    .map(|l| l.text.chars().count())
+                    .map(|l| ratatui::text::Line::raw(l.text.as_str()).width())
                     .max()
                     .unwrap_or(0);
                 self.diff = Some(DiffView {
@@ -839,9 +834,10 @@ impl App {
             .refs
             .get(&c.id)
             .and_then(|labels| {
-                labels
-                    .iter()
-                    .find(|l| matches!(l.kind, RefKind::Local | RefKind::Head))
+                // A detached HEAD is labelled "HEAD" too, but it is not a branch
+                labels.iter().find(|l| {
+                    l.kind == RefKind::Local || (l.kind == RefKind::Head && l.name != "HEAD")
+                })
             })
             .map(|l| l.name.clone());
         let prompt = match &branch {
@@ -860,7 +856,7 @@ impl App {
             return;
         };
         let hash = c.id.to_string();
-        copy_to_clipboard(&hash);
+        crate::terminal::copy(&mut std::io::stdout(), &hash);
         self.status = format!("Copied {hash}");
     }
 
@@ -1062,6 +1058,7 @@ pub fn find_matches(snap: &Snapshot, search: &Matcher) -> Vec<usize> {
         .enumerate()
         .filter(|(_, c)| {
             search.is_match(&c.summary)
+                || search.is_match(&c.body)
                 || search.is_match(&c.author)
                 || search.is_match(&c.email)
                 || search.is_match(&c.id.to_string())
@@ -1082,34 +1079,6 @@ pub fn branch_matches(snap: &Snapshot, filter: &str) -> Vec<usize> {
         .filter(|(_, b)| b.label.name.to_lowercase().contains(&f))
         .map(|(i, _)| i)
         .collect()
-}
-
-/// Puts `text` on the system clipboard with the OSC 52 terminal escape.
-fn copy_to_clipboard(text: &str) {
-    let seq = format!("\x1b]52;c;{}\x07", base64(text.as_bytes()));
-    let mut out = std::io::stdout();
-    let _ = out.write_all(seq.as_bytes()).and_then(|_| out.flush());
-}
-
-fn base64(data: &[u8]) -> String {
-    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::new();
-    for chunk in data.chunks(3) {
-        let b = [
-            chunk[0],
-            *chunk.get(1).unwrap_or(&0),
-            *chunk.get(2).unwrap_or(&0),
-        ];
-        let n = (b[0] as u32) << 16 | (b[1] as u32) << 8 | b[2] as u32;
-        for i in 0..4 {
-            if i <= chunk.len() {
-                out.push(T[(n >> (18 - 6 * i) & 63) as usize] as char);
-            } else {
-                out.push('=');
-            }
-        }
-    }
-    out
 }
 
 /// Whether (x, y) lies in `r`, excluding a border of `border` cells.

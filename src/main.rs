@@ -4,23 +4,36 @@ mod input;
 mod matcher;
 mod repo;
 mod selection;
+mod signals;
+mod terminal;
 mod ui;
 
+use std::io::{self, Write};
 use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::Result;
 use clap::Parser;
-use ratatui::DefaultTerminal;
-use ratatui::crossterm::event::{
-    self, DisableMouseCapture, EnableMouseCapture, Event, KeyEventKind,
-};
+use clap::builder::styling::{AnsiColor, Styles};
+use ratatui::backend::CrosstermBackend;
+use ratatui::crossterm::event::{self, Event, KeyEventKind};
 use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::{Clear, ClearType};
+use ratatui::{DefaultTerminal, Terminal};
 
-/// Interactive terminal git graph viewer.
+use signals::Signals;
+
 #[derive(Parser)]
-#[command(version)]
+#[command(
+    name = "git-graph",
+    version,
+    about = "A git history viewer: commit graph, details, files and diffs, with search and a branch picker.",
+    long_about = None,
+    styles = Styles::styled()
+        .header(AnsiColor::Yellow.on_default())
+        .usage(AnsiColor::Yellow.on_default())
+        .literal(AnsiColor::Green.on_default()),
+)]
 struct Cli {
     /// Path inside the repository.
     #[arg(default_value = ".")]
@@ -41,7 +54,8 @@ struct Cli {
     /// Don't show stash entries.
     #[arg(long)]
     no_stash: bool,
-    /// Disable mouse support (keeps terminal text selection working).
+    /// Don't capture the mouse: drag uses the terminal's own selection, and the wheel
+    /// scrolls only where the terminal supports alternate scroll mode.
     #[arg(long)]
     no_mouse: bool,
     /// Print the graph to stdout instead of starting the TUI.
@@ -62,10 +76,41 @@ fn main() -> Result<()> {
 
     if cli.print {
         let snap = repo::load(&repo, &opts)?;
+        // A reader that stops early (`| head`) is not an error
+        return match print_graph(&snap) {
+            Err(e) if e.kind() == io::ErrorKind::BrokenPipe => Ok(()),
+            other => Ok(other?),
+        };
+    }
+
+    let mut app = app::App::new(repo, opts)?;
+    // A panic anywhere restores the terminal; termination signals end through the
+    // same cleanup as q.
+    terminal::on_panic(|| {});
+    let guard = terminal::enter(stdout, !cli.no_mouse)?;
+    let signals = Signals::catch(|| {})?;
+    let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
+    let result = run(&mut terminal, &mut app, &signals);
+    drop(terminal);
+    drop(guard);
+    if let Some(sig) = result? {
+        std::process::exit(signals::exit_status(sig));
+    }
+    Ok(())
+}
+
+fn stdout() -> Box<dyn Write> {
+    Box::new(io::stdout())
+}
+
+/// `--print`: the graph as plain text.
+fn print_graph(snap: &repo::Snapshot) -> io::Result<()> {
+    let mut out = io::BufWriter::new(io::stdout().lock());
+    {
         for r in &snap.rows {
             let g: String = r.cells.iter().map(graph::Cell::ch).collect();
             let Some(i) = r.commit else {
-                println!("{}", g.trim_end());
+                writeln!(out, "{}", g.trim_end())?;
                 continue;
             };
             let c = &snap.commits[i];
@@ -78,40 +123,42 @@ fn main() -> Result<()> {
                         .collect::<String>()
                 })
                 .unwrap_or_default();
-            println!("{g:<16} {} {refs}{}", c.short, c.summary);
+            writeln!(out, "{g:<16} {} {refs}{}", c.short, c.summary)?;
         }
-        return Ok(());
     }
-
-    let mut app = app::App::new(repo, opts)?;
-    let mut terminal = ratatui::init();
-    if !cli.no_mouse {
-        execute!(std::io::stdout(), EnableMouseCapture)?;
-    }
-    let result = run(&mut terminal, &mut app);
-    if !cli.no_mouse {
-        let _ = execute!(std::io::stdout(), DisableMouseCapture);
-    }
-    ratatui::restore();
-    result
+    out.flush()
 }
 
-fn run(terminal: &mut ratatui::DefaultTerminal, app: &mut app::App) -> Result<()> {
+/// Returns the signal that ended the program, if one did.
+fn run(
+    terminal: &mut DefaultTerminal,
+    app: &mut app::App,
+    signals: &Signals,
+) -> Result<Option<i32>> {
     while !app.quit {
+        if let Some(sig) = signals.received() {
+            return Ok(Some(sig));
+        }
         if std::mem::take(&mut app.redraw) {
             refresh_screen(terminal)?;
         }
         terminal.draw(|f| ui::draw(f, app))?;
-        if !event::poll(Duration::from_millis(500))? {
+        if !event::poll(Duration::from_millis(250))? {
             continue;
         }
-        match event::read()? {
-            Event::Key(k) if k.kind != KeyEventKind::Release => app.on_key(k),
-            Event::Mouse(m) => app.on_mouse(m),
-            _ => {}
+        // Handle every queued event before the next draw, like track and monitor
+        loop {
+            match event::read()? {
+                Event::Key(k) if k.kind != KeyEventKind::Release => app.on_key(k),
+                Event::Mouse(m) => app.on_mouse(m),
+                _ => {}
+            }
+            if app.quit || !event::poll(Duration::ZERO)? {
+                break;
+            }
         }
     }
-    Ok(())
+    Ok(None)
 }
 
 /// Redraws the whole screen (r: refresh), the same in track, monitor and git-graph.

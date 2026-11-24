@@ -27,6 +27,8 @@ pub struct CommitInfo {
     pub short: String,
     pub parents: Vec<Oid>,
     pub summary: String,
+    /// The rest of the message (searched too).
+    pub body: String,
     pub author: String,
     pub email: String,
     pub time: i64,
@@ -40,8 +42,12 @@ pub struct CommitInfo {
 #[derive(Clone, Debug)]
 pub struct FileChange {
     pub status: char,
+    /// For display (invalid UTF-8 replaced).
     pub path: String,
     pub old_path: Option<String>,
+    /// The paths as stored, to find the file's diff even when they aren't UTF-8.
+    pub raw_path: Vec<u8>,
+    pub raw_old_path: Option<Vec<u8>>,
     pub added: usize,
     pub removed: usize,
 }
@@ -128,6 +134,14 @@ pub fn open(path: &Path) -> Result<Repository> {
     Repository::discover(path).with_context(|| format!("not a git repository: {}", path.display()))
 }
 
+/// Text that may not be UTF-8 (old commits in another encoding): shown with
+/// replacement characters rather than dropped.
+fn lossy(bytes: Option<&[u8]>) -> String {
+    bytes
+        .map(|b| String::from_utf8_lossy(b).into_owned())
+        .unwrap_or_default()
+}
+
 pub fn load(repo: &Repository, opts: &LoadOptions) -> Result<Snapshot> {
     let mut refs: HashMap<Oid, Vec<RefLabel>> = HashMap::new();
     let mut branches = Vec::new();
@@ -192,9 +206,15 @@ pub fn load(repo: &Repository, opts: &LoadOptions) -> Result<Snapshot> {
         let name = String::from_utf8_lossy(name);
         let name = name.trim_start_matches("refs/tags/").to_string();
         if let Ok(commit) = repo.find_object(oid, None).and_then(|o| o.peel_to_commit()) {
-            refs.entry(commit.id()).or_default().push(RefLabel {
+            let label = RefLabel {
                 name,
                 kind: RefKind::Tag,
+            };
+            refs.entry(commit.id()).or_default().push(label.clone());
+            // Tags are in the picker too (b: branch, tag & stash picker)
+            branches.push(BranchEntry {
+                label,
+                target: commit.id(),
             });
             if opts.all {
                 let _ = walk.push(commit.id());
@@ -230,9 +250,10 @@ pub fn load(repo: &Repository, opts: &LoadOptions) -> Result<Snapshot> {
                 .unwrap_or("")
                 .to_string(),
             parents: commit.parent_ids().collect(),
-            summary: commit.summary().ok().flatten().unwrap_or("").to_string(),
-            author: author.name().unwrap_or("?").to_string(),
-            email: author.email().unwrap_or("").to_string(),
+            summary: lossy(commit.summary_bytes()),
+            body: lossy(commit.body_bytes()),
+            author: lossy(Some(author.name_bytes())),
+            email: lossy(Some(author.email_bytes())),
             time: author.when().seconds(),
             offset_min: author.when().offset_minutes(),
             branch: None,
@@ -478,9 +499,10 @@ fn add_stashes(repo: &Repository, commits: &mut Vec<CommitInfo>) -> Result<Vec<O
                     .unwrap_or("")
                     .to_string(),
                 parents: base.into_iter().collect(),
-                summary: commit.summary().ok().flatten().unwrap_or("").to_string(),
-                author: author.name().unwrap_or("?").to_string(),
-                email: author.email().unwrap_or("").to_string(),
+                summary: lossy(commit.summary_bytes()),
+                body: lossy(commit.body_bytes()),
+                author: lossy(Some(author.name_bytes())),
+                email: lossy(Some(author.email_bytes())),
                 time,
                 offset_min: author.when().offset_minutes(),
                 branch: None,
@@ -588,15 +610,19 @@ pub fn detail(repo: &Repository, id: Oid) -> Result<CommitDetail> {
             Delta::Typechange => 'T',
             _ => '?',
         };
-        let path = delta
+        let raw_path = delta
             .new_file()
-            .path()
-            .or(delta.old_file().path())
-            .map(|p| p.display().to_string())
-            .unwrap_or_default();
-        let old_path = (status == 'R' || status == 'C')
-            .then(|| delta.old_file().path().map(|p| p.display().to_string()))
+            .path_bytes()
+            .or(delta.old_file().path_bytes())
+            .unwrap_or_default()
+            .to_vec();
+        let raw_old_path = (status == 'R' || status == 'C')
+            .then(|| delta.old_file().path_bytes().map(<[u8]>::to_vec))
             .flatten();
+        let path = String::from_utf8_lossy(&raw_path).into_owned();
+        let old_path = raw_old_path
+            .as_deref()
+            .map(|p| String::from_utf8_lossy(p).into_owned());
         let (added, removed) = match git2::Patch::from_diff(&diff, i) {
             Ok(Some(p)) => p.line_stats().map(|(_, a, d)| (a, d)).unwrap_or((0, 0)),
             _ => (0, 0),
@@ -605,6 +631,8 @@ pub fn detail(repo: &Repository, id: Oid) -> Result<CommitDetail> {
             status,
             path,
             old_path,
+            raw_path,
+            raw_old_path,
             added,
             removed,
         });
@@ -612,11 +640,11 @@ pub fn detail(repo: &Repository, id: Oid) -> Result<CommitDetail> {
     let committer = commit.committer();
     Ok(CommitDetail {
         id,
-        message: commit.message().unwrap_or("").trim_end().to_string(),
+        message: lossy(Some(commit.message_bytes())).trim_end().to_string(),
         committer: format!(
             "{} <{}>",
-            committer.name().unwrap_or("?"),
-            committer.email().unwrap_or("")
+            lossy(Some(committer.name_bytes())),
+            lossy(Some(committer.email_bytes()))
         ),
         commit_time: committer.when().seconds(),
         commit_offset: committer.when().offset_minutes(),
@@ -630,9 +658,10 @@ pub fn file_diff(repo: &Repository, id: Oid, path: Option<&FileChange>) -> Resul
         Some(f) => {
             // Include both sides so renames show their content diff.
             let mut opts = DiffOptions::new();
-            opts.pathspec(&f.path).disable_pathspec_match(true);
-            if let Some(old) = &f.old_path {
-                opts.pathspec(old);
+            opts.pathspec(f.raw_path.as_slice())
+                .disable_pathspec_match(true);
+            if let Some(old) = &f.raw_old_path {
+                opts.pathspec(old.as_slice());
             }
             let commit = repo.find_commit(id)?;
             let parent_tree = commit.parent(0).ok().map(|p| p.tree()).transpose()?;
@@ -681,23 +710,73 @@ pub fn file_diff(repo: &Repository, id: Oid, path: Option<&FileChange>) -> Resul
 }
 
 /// Safe checkout (refuses to overwrite local changes). Checks out the local
-/// branch if given, otherwise detaches HEAD at the commit.
+/// branch if given, otherwise detaches HEAD at the commit. Everything is checked
+/// before the working tree is touched.
 pub fn checkout(repo: &Repository, id: Oid, branch: Option<&str>) -> Result<String> {
     let commit = repo.find_commit(id)?;
+    let target = match branch {
+        Some(b) => {
+            let found = repo
+                .find_branch(b, git2::BranchType::Local)
+                .with_context(|| format!("no local branch '{b}'"))?;
+            let name = found.get().name()?.to_string();
+            if let Some(path) = checked_out_elsewhere(repo, &name)? {
+                anyhow::bail!("'{b}' is already checked out at {path}");
+            }
+            Some(name)
+        }
+        None => None,
+    };
     let mut cb = git2::build::CheckoutBuilder::new();
     cb.safe();
     repo.checkout_tree(commit.as_object(), Some(&mut cb))
         .context("checkout failed (uncommitted changes would be overwritten?)")?;
-    match branch {
-        Some(b) => {
-            repo.set_head(&format!("refs/heads/{b}"))?;
+    match (branch, target) {
+        (Some(b), Some(name)) => {
+            repo.set_head(&name)?;
             Ok(format!("Switched to branch '{b}'"))
         }
-        None => {
+        _ => {
             repo.set_head_detached(id)?;
             Ok(format!("HEAD detached at {}", &id.to_string()[..8]))
         }
     }
+}
+
+/// Where another worktree of this repository has `refname` checked out, if one does:
+/// git keeps a branch checked out in one worktree at a time.
+fn checked_out_elsewhere(repo: &Repository, refname: &str) -> Result<Option<String>> {
+    let head_of = |r: &Repository| r.head().ok().and_then(|h| h.name().ok().map(str::to_owned));
+    let here = repo.path().canonicalize()?;
+    let main = Repository::open(repo.commondir())?;
+    // (git dir, checked out ref, where to say it is)
+    let mut worktrees = vec![(
+        main.path().to_path_buf(),
+        head_of(&main),
+        main.workdir().map(|p| p.display().to_string()),
+    )];
+    for name in main.worktrees()?.iter().flatten().flatten() {
+        let Ok(wt) = main.find_worktree(name) else {
+            continue;
+        };
+        let Ok(r) = Repository::open_from_worktree(&wt) else {
+            continue;
+        };
+        worktrees.push((
+            r.path().to_path_buf(),
+            head_of(&r),
+            Some(wt.path().display().to_string()),
+        ));
+    }
+    for (gitdir, head, path) in worktrees {
+        if gitdir.canonicalize().is_ok_and(|g| g == here) {
+            continue;
+        }
+        if head.as_deref() == Some(refname) {
+            return Ok(Some(path.unwrap_or_else(|| gitdir.display().to_string())));
+        }
+    }
+    Ok(None)
 }
 
 #[cfg(test)]
@@ -706,6 +785,57 @@ mod tests {
 
     fn v(xs: &[&str]) -> Vec<String> {
         xs.iter().map(|s| s.to_string()).collect()
+    }
+
+    fn scratch_dir(name: &str) -> std::path::PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("git-graph-test-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        dir
+    }
+
+    fn commit_file(repo: &Repository, file: &str, msg: &str) -> Oid {
+        std::fs::write(repo.workdir().unwrap().join(file), msg).unwrap();
+        let mut index = repo.index().unwrap();
+        index.add_path(std::path::Path::new(file)).unwrap();
+        index.write().unwrap();
+        let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
+        let sig = git2::Signature::now("t", "t@example.com").unwrap();
+        let parent = repo.head().ok().and_then(|h| h.peel_to_commit().ok());
+        let parents: Vec<&git2::Commit> = parent.iter().collect();
+        repo.commit(Some("HEAD"), &sig, &sig, msg, &tree, &parents)
+            .unwrap()
+    }
+
+    #[test]
+    fn checkout_checks_before_touching_the_working_tree() {
+        let (dir, wt_dir) = (scratch_dir("main"), scratch_dir("wt"));
+        let repo = Repository::init(&dir).unwrap();
+        let first = commit_file(&repo, "a.txt", "first");
+        let main_branch = repo.head().unwrap().name().unwrap().to_string();
+        // `feature`, one commit ahead, is checked out in a linked worktree
+        let branch = repo
+            .branch("feature", &repo.find_commit(first).unwrap(), false)
+            .unwrap();
+        let mut add = git2::WorktreeAddOptions::new();
+        add.reference(Some(branch.get()));
+        let wt = repo.worktree("wt", &wt_dir, Some(&add)).unwrap();
+        let wt_repo = Repository::open_from_worktree(&wt).unwrap();
+        let second = commit_file(&wt_repo, "b.txt", "second");
+
+        let err = checkout(&repo, second, Some("feature")).unwrap_err();
+        assert!(err.to_string().contains("already checked out"), "{err:#}");
+        // Nothing changed here: same branch, no new file, nothing staged
+        assert_eq!(repo.head().unwrap().name().unwrap(), main_branch);
+        assert!(!dir.join("b.txt").exists());
+        assert!(repo.statuses(None).unwrap().is_empty());
+
+        // A detached HEAD's "HEAD" label is not a branch to switch to
+        assert!(checkout(&repo, first, Some("HEAD")).is_err());
+        assert_eq!(repo.head().unwrap().name().unwrap(), main_branch);
+
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&wt_dir);
     }
 
     #[test]

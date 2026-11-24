@@ -9,8 +9,10 @@ anyhow = "1.0.105"
 chrono = "0.4.45"
 clap = { version = "4.6.9", features = ["derive"] }
 git2 = "0.21.0"
-ratatui = "0.30.2"
+ratatui = { version = "0.30.2", features = ["unstable-rendered-line-info"] }
 regex = "1.13.1"
+signal-hook = "0.3.18"
+unicode-segmentation = "1.13.3"
 unicode-width = "0.2.3"
 
 [profile.release]
