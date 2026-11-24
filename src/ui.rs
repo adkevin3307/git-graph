@@ -502,7 +502,7 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
                 &[
                     ("j/k", "scroll"),
                     ("h/l", "scroll sideways"),
-                    ("0/$", "line start/end"),
+                    ("home/end", "line start/end"),
                     ("tab", "next file"),
                     (
                         "z",
@@ -571,7 +571,8 @@ fn draw_help(f: &mut Frame, app: &mut App, scroll: u16) {
     let rows: &[(&str, &str)] = &[
         ("Commits", ""),
         ("j/k ↑/↓", "move the selection"),
-        ("ctrl-d/u, PgDn/PgUp", "half / full page"),
+        ("ctrl-d/u", "half page"),
+        ("PgDn/PgUp, ctrl-f/b", "full page"),
         ("g/G", "first / last commit"),
         ("H", "jump to HEAD"),
         ("p / c", "first parent / child"),
@@ -594,10 +595,11 @@ fn draw_help(f: &mut Frame, app: &mut App, scroll: u16) {
         ("D", "diff of the whole commit"),
         ("Diff (replaces the graph)", ""),
         ("j/k", "scroll up / down"),
-        ("ctrl-d/u, PgDn/PgUp", "half / full page"),
+        ("ctrl-d/u", "half page"),
+        ("PgDn/PgUp, ctrl-f/b", "full page"),
         ("g/G", "top / bottom"),
         ("h/l, H/L", "scroll sideways (4 columns / half a page)"),
-        ("0 / $", "scroll to line start / end"),
+        ("home / end", "scroll to line start / end"),
         ("tab / shift-tab", "next / previous file (wraps around)"),
         ("z", "maximize / restore the diff"),
         ("esc", "close the diff, back to the graph"),

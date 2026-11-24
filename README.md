@@ -154,7 +154,7 @@ move focus).
 | Key | Action |
 |---|---|
 | `j`/`k`, `↓`/`↑` | Move the selection |
-| `ctrl-d`/`ctrl-u`, `PgDn`/`PgUp` | Half / full page |
+| `ctrl-d`/`ctrl-u`, `PgDn`/`PgUp`, `ctrl-f`/`ctrl-b` | Half / full page |
 | `g` / `G` | First / last commit |
 | `H` | Jump to HEAD |
 | `p` / `c` | First parent / child |
@@ -189,10 +189,10 @@ move focus).
 | Key | Action |
 |---|---|
 | `j`/`k` | Scroll up / down |
-| `ctrl-d`/`ctrl-u`, `PgDn`/`PgUp` | Half / full page |
+| `ctrl-d`/`ctrl-u`, `PgDn`/`PgUp`, `ctrl-f`/`ctrl-b` | Half / full page |
 | `g` / `G` | Top / bottom |
 | `h` / `l`, `H` / `L` | Scroll sideways (4 columns / half a page) |
-| `0` / `$` | Scroll to line start / end |
+| `home` / `end` | Scroll to line start / end |
 | `tab` / `shift-tab` | Next / previous file, wrapping around |
 | `z` | Maximize / restore the diff |
 | `esc` | Close the diff and return to the graph |
@@ -208,6 +208,32 @@ move focus).
 | `r` | Reload the repository |
 | `?` | Help (`j`/`k` scroll it if it doesn't fit; any other key closes it) |
 | `q` | Quit |
+
+### Shared key guideline
+
+`track`, `monitor` and `git-graph` follow one key guideline, so the same
+keys do the same thing in all three:
+
+| Key | Meaning |
+|---|---|
+| `j`/`k`, `↓`/`↑` | One line down / up |
+| `ctrl-d`/`ctrl-u` | Half a page down / up |
+| `PgDn`/`PgUp`, `ctrl-f`/`ctrl-b` | A full page down / up |
+| `g` / `G` | Top / bottom |
+| `h`/`l` | Sideways 4 columns |
+| `H`/`L` | Sideways half a page |
+| `home` / `end` | Line start / end (not top / bottom) |
+| `/`, `n` / `N` | Search, next / previous match |
+| `esc` | Clear the search, or go back |
+| `?` | Help (any key closes it; `j`/`k` scroll it when it doesn't fit) |
+| `q`, `ctrl-c` | Quit |
+| mouse wheel | Scroll |
+| mouse drag | Select text and copy it with OSC 52 on release |
+| shift + drag | The terminal's own selection |
+
+Other keys are specific to one tool. Where a view doesn't scroll sideways,
+`h`/`l`/`H`/`L` may do something else there (in `git-graph`'s commit list
+they move between panes and jump to HEAD).
 
 ## Copying text
 

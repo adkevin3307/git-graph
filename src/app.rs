@@ -606,8 +606,8 @@ impl App {
             KeyCode::PageUp | KeyCode::Char('b') if key.code == KeyCode::PageUp || ctrl => {
                 self.move_by(-(self.page as isize))
             }
-            KeyCode::Home | KeyCode::Char('g') => self.move_by(isize::MIN / 2),
-            KeyCode::End | KeyCode::Char('G') => self.move_by(isize::MAX / 2),
+            KeyCode::Char('g') => self.move_by(isize::MIN / 2),
+            KeyCode::Char('G') => self.move_by(isize::MAX / 2),
             KeyCode::Char('s') => self.toggle_search_highlight(),
             KeyCode::Right => self.focus_right(),
             KeyCode::Left => self.focus_left(),
@@ -689,8 +689,8 @@ impl App {
             match key.code {
                 KeyCode::Down | KeyCode::Char('j') => self.step_diff_file(1),
                 KeyCode::Up | KeyCode::Char('k') => self.step_diff_file(-1),
-                KeyCode::Home | KeyCode::Char('g') if n > 0 => self.goto_diff_file(0),
-                KeyCode::End | KeyCode::Char('G') if n > 0 => self.goto_diff_file(n - 1),
+                KeyCode::Char('g') if n > 0 => self.goto_diff_file(0),
+                KeyCode::Char('G') if n > 0 => self.goto_diff_file(n - 1),
                 KeyCode::Enter | KeyCode::Char('l') => self.focus = Focus::Diff,
                 KeyCode::Char('h') => self.close_diff(),
                 _ => {}
@@ -701,8 +701,8 @@ impl App {
             match key.code {
                 KeyCode::Down | KeyCode::Char('j') => self.scroll_commit(1),
                 KeyCode::Up | KeyCode::Char('k') => self.scroll_commit(-1),
-                KeyCode::Home | KeyCode::Char('g') => self.commit_scroll = 0,
-                KeyCode::End | KeyCode::Char('G') => self.scroll_commit(isize::MAX / 2),
+                KeyCode::Char('g') => self.commit_scroll = 0,
+                KeyCode::Char('G') => self.scroll_commit(isize::MAX / 2),
                 _ => {}
             }
             return;
@@ -717,16 +717,18 @@ impl App {
             KeyCode::Up | KeyCode::Char('k') => scroll(-1),
             KeyCode::Char('d') if ctrl => scroll(half),
             KeyCode::Char('u') if ctrl => scroll(-half),
+            KeyCode::Char('f') if ctrl => scroll(page),
+            KeyCode::Char('b') if ctrl => scroll(-page),
             KeyCode::PageDown | KeyCode::Char(' ') => scroll(page),
             KeyCode::PageUp => scroll(-page),
-            KeyCode::Home | KeyCode::Char('g') => d.scroll = 0,
-            KeyCode::End | KeyCode::Char('G') => d.scroll = max,
+            KeyCode::Char('g') => d.scroll = 0,
+            KeyCode::Char('G') => d.scroll = max,
             KeyCode::Char('h') => self.hscroll(-(HSTEP as isize)),
             KeyCode::Char('l') => self.hscroll(HSTEP as isize),
             KeyCode::Char('H') => self.hscroll(-wide),
             KeyCode::Char('L') => self.hscroll(wide),
-            KeyCode::Char('0') => self.hscroll(isize::MIN / 2),
-            KeyCode::Char('$') => self.hscroll(isize::MAX / 2),
+            KeyCode::Home => self.hscroll(isize::MIN / 2),
+            KeyCode::End => self.hscroll(isize::MAX / 2),
             _ => {}
         }
     }
