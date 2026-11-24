@@ -1,5 +1,7 @@
 mod app;
 mod graph;
+mod input;
+mod matcher;
 mod repo;
 mod selection;
 mod ui;

@@ -53,9 +53,10 @@ graph that you can browse, search and diff from the keyboard.
 - **Diffs in place of the graph** with the commit details and file list still
   visible; maximize with `z`, scroll sideways with `h`/`l`, `tab` through
   files.
-- **Search popup** with live results across message, author, email, hash and
-  branch/tag names; `n`/`N` to step through matches, `s` to toggle
-  highlighting.
+- **Search** across message, author, email, hash and branch/tag names in a
+  small input box: regex with smart case, matches highlighted and the first
+  one selected while you type, `n`/`N` to step through them and `esc` to
+  hide the highlights. See [Shared search](#shared-search).
 - **Stashes** appear as `stash@{n}` commits hanging off the commit they were
   made on, with their changed files and diff (hide them with `--no-stash`).
 - **Branch, tag & stash picker** with type-to-filter.
@@ -166,9 +167,9 @@ move focus).
 
 | Key | Action |
 |---|---|
-| `/` | Search popup (starts from the last query; `ctrl-u` clears) |
-| `n` / `N` | Next / previous match |
-| `s` | Toggle search highlighting |
+| `/` | Search message, author, email, hash and refs (regex, smart case; selects the first match while typing) |
+| `n` / `N` | Next / previous match; shows hidden highlights |
+| `esc` | Hide the search highlights (the next `esc` focuses the graph) |
 
 **Commit details**
 
@@ -224,7 +225,7 @@ keys do the same thing in all three:
 | `H`/`L` | Sideways half a page |
 | `home` / `end` | Line start / end (not top / bottom) |
 | `/`, `n` / `N` | Search, next / previous match |
-| `esc` | Clear the search, or go back |
+| `esc` | Hide the search highlights, then go back |
 | `?` | Help (any key closes it; `j`/`k` scroll it when it doesn't fit) |
 | `q`, `ctrl-c` | Quit |
 | mouse wheel | Scroll |
@@ -234,6 +235,32 @@ keys do the same thing in all three:
 Other keys are specific to one tool. Where a view doesn't scroll sideways,
 `h`/`l`/`H`/`L` may do something else there (in `git-graph`'s commit list
 they move between panes and jump to HEAD).
+
+### Shared search
+
+`/` opens the same small input box near the top of the screen in all three
+(in the style of snacks.nvim's input):
+
+```
+          ╭───────────────────── Search ─────────────────────╮
+          │  error█                               12 matches │
+          ╰──── enter search · ↑/↓ history · esc cancel ─────╯
+```
+
+- Patterns are regular expressions with smart case (case-insensitive unless
+  the pattern has an uppercase letter); an invalid regex is matched literally.
+- While you type, matches are highlighted, the view jumps to the first match
+  from where you started, and the box shows how many there are.
+- `enter` keeps the search; `esc` cancels it and goes back to where you were;
+  an empty search clears it.
+- Editing: `←`/`→`, `home`/`end`, `ctrl-a`/`ctrl-e` move the cursor,
+  `ctrl-u`/`ctrl-w` delete to the start / the previous word, `↑`/`↓` browse
+  earlier searches, and `backspace` on an empty box closes it.
+- The main panel's title shows the search and the current match, e.g.
+  `/error  3/12`.
+- Matches are highlighted in black on yellow. `esc` hides the highlights but
+  keeps the search (the title then says `hidden`), like vim's `:noh`; `n` / `N`
+  show them again and jump to the next / previous match.
 
 ## Copying text
 

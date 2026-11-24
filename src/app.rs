@@ -7,6 +7,8 @@ use ratatui::crossterm::event::{
 };
 use ratatui::layout::Rect;
 
+use crate::input::{LineEditor, push_history};
+use crate::matcher::Matcher;
 use crate::repo::{self, CommitDetail, DiffLine, LoadOptions, RefKind, Snapshot};
 use crate::selection::{Pane, PaneLayout, Selection};
 
@@ -25,12 +27,8 @@ const HSTEP: usize = 4;
 
 pub enum Mode {
     Normal,
-    /// Search popup: live list of matching commits.
-    Search {
-        input: String,
-        results: Vec<usize>,
-        selected: usize,
-    },
+    /// The search box is open; what is typed is in `App::editor`.
+    Search,
     Branches {
         filter: String,
         selected: usize,
@@ -71,10 +69,16 @@ pub struct App {
     pub detail: Option<CommitDetail>,
     pub file_selected: usize,
     pub diff: Option<DiffView>,
-    pub query: String,
+    /// The active search and the commits it matches, in graph order.
+    pub search: Option<Matcher>,
     pub matches: Vec<usize>,
-    /// Whether search matches are highlighted in the commit list (toggle: s).
-    pub search_highlight: bool,
+    /// Esc hides the search highlights (like vim's :noh); n / N show them again.
+    pub search_hidden: bool,
+    /// What is typed in the search box, and earlier searches.
+    pub editor: LineEditor,
+    search_history: Vec<String>,
+    /// State when the search box opened, restored on cancel.
+    search_origin: Option<SearchOrigin>,
     pub status: String,
     pub quit: bool,
     /// Height of the graph list in rows, updated on draw.
@@ -117,9 +121,12 @@ impl App {
             detail: None,
             file_selected: 0,
             diff: None,
-            query: String::new(),
+            search: None,
             matches: Vec::new(),
-            search_highlight: true,
+            search_hidden: false,
+            editor: LineEditor::default(),
+            search_history: Vec::new(),
+            search_origin: None,
             status: String::new(),
             quit: false,
             page: 20,
@@ -454,71 +461,7 @@ impl App {
                 KeyCode::End | KeyCode::Char('G') => *scroll = self.help_max,
                 _ => self.mode = Mode::Normal,
             },
-            Mode::Search {
-                input,
-                results,
-                selected,
-            } => {
-                let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-                let last = results.len().saturating_sub(1);
-                let mut edited = false;
-                match key.code {
-                    KeyCode::Esc => self.mode = Mode::Normal,
-                    KeyCode::Down | KeyCode::Tab => *selected = (*selected + 1).min(last),
-                    KeyCode::Up | KeyCode::BackTab => *selected = selected.saturating_sub(1),
-                    KeyCode::Char('n') if ctrl => *selected = (*selected + 1).min(last),
-                    KeyCode::Char('p') if ctrl => *selected = selected.saturating_sub(1),
-                    KeyCode::PageDown => *selected = (*selected + 10).min(last),
-                    KeyCode::PageUp => *selected = selected.saturating_sub(10),
-                    KeyCode::Char('u') if ctrl => {
-                        input.clear();
-                        edited = true;
-                    }
-                    KeyCode::Backspace => {
-                        input.pop();
-                        edited = true;
-                    }
-                    KeyCode::Char(c) if !ctrl => {
-                        input.push(c);
-                        edited = true;
-                    }
-                    KeyCode::Enter => {
-                        let target = results.get(*selected).copied();
-                        self.query = std::mem::take(input);
-                        self.matches = std::mem::take(results);
-                        self.search_highlight = true;
-                        self.mode = Mode::Normal;
-                        match target {
-                            Some(i) => {
-                                self.focus = Focus::Graph;
-                                self.diff = None;
-                                self.select(i);
-                                let pos = self.matches.iter().position(|&m| m == i).unwrap() + 1;
-                                self.status = format!(
-                                    "[{pos}/{}] '{}'  (n/N: next/prev)",
-                                    self.matches.len(),
-                                    self.query
-                                );
-                            }
-                            None if !self.query.is_empty() => {
-                                self.status = format!("No match for '{}'", self.query)
-                            }
-                            None => {}
-                        }
-                    }
-                    _ => {}
-                }
-                if edited
-                    && let Mode::Search {
-                        input,
-                        results,
-                        selected,
-                    } = &mut self.mode
-                {
-                    *results = find_matches(&self.snap, input);
-                    *selected = 0;
-                }
-            }
+            Mode::Search => self.key_search(key),
             Mode::Branches { filter, selected } => {
                 let visible = branch_matches(&self.snap, filter);
                 match key.code {
@@ -608,7 +551,6 @@ impl App {
             }
             KeyCode::Char('g') => self.move_by(isize::MIN / 2),
             KeyCode::Char('G') => self.move_by(isize::MAX / 2),
-            KeyCode::Char('s') => self.toggle_search_highlight(),
             KeyCode::Right => self.focus_right(),
             KeyCode::Left => self.focus_left(),
             KeyCode::Enter | KeyCode::Char('l') => match self.focus {
@@ -624,6 +566,10 @@ impl App {
                     }
                 }
             },
+            // Esc first hides the search highlights (n / N show them again).
+            KeyCode::Esc if self.search.is_some() && !self.search_hidden => {
+                self.search_hidden = true
+            }
             KeyCode::Esc | KeyCode::Char('h') => self.focus = Focus::Graph,
             KeyCode::Char('D') => {
                 self.open_diff(None);
@@ -632,12 +578,16 @@ impl App {
                 }
             }
             KeyCode::Char('/') => {
-                // Reopen with the previous query so it can be refined.
-                self.mode = Mode::Search {
-                    input: self.query.clone(),
-                    results: find_matches(&self.snap, &self.query),
-                    selected: 0,
-                }
+                self.search_origin = Some(SearchOrigin {
+                    selected: self.selected,
+                    offset: self.offset,
+                    focus: self.focus,
+                    search: self.search.clone(),
+                    matches: self.matches.clone(),
+                    hidden: self.search_hidden,
+                });
+                self.editor.clear();
+                self.mode = Mode::Search;
             }
             KeyCode::Char('n') => self.next_match(true, false),
             KeyCode::Char('N') => self.next_match(false, false),
@@ -926,29 +876,100 @@ impl App {
         self.status = format!("Copied {hash}");
     }
 
-    fn toggle_search_highlight(&mut self) {
-        if self.query.is_empty() {
-            self.status = "No search (press /)".into();
-            return;
-        }
-        self.search_highlight = !self.search_highlight;
-        self.status = format!(
-            "Search highlight {} for '{}'",
-            if self.search_highlight { "on" } else { "off" },
-            self.query
-        );
+    pub fn recompute_matches(&mut self) {
+        self.matches = match &self.search {
+            Some(m) => find_matches(&self.snap, m),
+            None => Vec::new(),
+        };
     }
 
-    pub fn recompute_matches(&mut self) {
-        self.matches = find_matches(&self.snap, &self.query);
+    /// Keys while the search box is open: edit, search while typing, submit or cancel.
+    fn key_search(&mut self, key: KeyEvent) {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let before = self.editor.text().to_string();
+        match key.code {
+            KeyCode::Esc => return self.cancel_search(),
+            KeyCode::Char('c') if ctrl => return self.cancel_search(),
+            KeyCode::Backspace if self.editor.text().is_empty() => return self.cancel_search(),
+            KeyCode::Enter => {
+                let text = self.editor.text().to_string();
+                push_history(&mut self.search_history, text.trim());
+                self.mode = Mode::Normal;
+                if text.trim().is_empty() {
+                    // An empty search clears it.
+                    self.restore_origin();
+                    self.search = None;
+                    self.matches.clear();
+                } else if self.matches.is_empty() {
+                    let label = self.search.as_ref().map(Matcher::label).unwrap_or_default();
+                    self.status = format!("Pattern not found: {label}");
+                }
+                self.search_origin = None;
+                return;
+            }
+            KeyCode::Backspace => self.editor.backspace(),
+            KeyCode::Delete => self.editor.delete(),
+            KeyCode::Left => self.editor.left(),
+            KeyCode::Right => self.editor.right(),
+            KeyCode::Home => self.editor.home(),
+            KeyCode::End => self.editor.end(),
+            KeyCode::Char('a') if ctrl => self.editor.home(),
+            KeyCode::Char('e') if ctrl => self.editor.end(),
+            KeyCode::Char('u') if ctrl => self.editor.kill_to_start(),
+            KeyCode::Char('w') if ctrl => self.editor.delete_word(),
+            KeyCode::Up => self.editor.history_prev(&self.search_history),
+            KeyCode::Down => self.editor.history_next(&self.search_history),
+            KeyCode::Char(c) if !ctrl => self.editor.insert(c),
+            _ => {}
+        }
+        if self.editor.text() != before {
+            self.preview_search();
+        }
+    }
+
+    /// Search while typing: highlight the matches and select the first one at or
+    /// after the commit selected when the search started (wrapping around).
+    fn preview_search(&mut self) {
+        self.restore_origin();
+        self.search = Matcher::new(self.editor.text(), false);
+        self.search_hidden = false;
+        self.recompute_matches();
+        let from = self.selected;
+        if let Some(&target) = self.matches.iter().find(|&&i| i >= from).or(self.matches.first()) {
+            self.focus = Focus::Graph;
+            self.select(target);
+        }
+    }
+
+    /// Back to the selection (and search) from before the search box opened.
+    fn restore_origin(&mut self) {
+        let Some(o) = &self.search_origin else { return };
+        let (selected, offset, focus) = (o.selected, o.offset, o.focus);
+        self.select(selected);
+        self.offset = offset;
+        self.focus = focus;
+    }
+
+    fn cancel_search(&mut self) {
+        self.restore_origin();
+        if let Some(o) = self.search_origin.take() {
+            self.search = o.search;
+            self.matches = o.matches;
+            self.search_hidden = o.hidden;
+        }
+        self.mode = Mode::Normal;
+    }
+
+    /// Position of the selected commit among the matches, if it is one.
+    pub fn match_position(&self) -> Option<usize> {
+        self.matches.binary_search(&self.selected).ok()
     }
 
     fn next_match(&mut self, forward: bool, inclusive: bool) {
         if self.matches.is_empty() {
-            self.status = if self.query.is_empty() {
-                "No search (press /)".into()
-            } else {
-                format!("No match for '{}'", self.query)
+            self.status = match &self.search {
+                None => "No search (press /)".into(),
+                Some(m) => format!("Pattern not found: {}", m.label()),
             };
             return;
         }
@@ -968,32 +989,36 @@ impl App {
                 .unwrap_or(*self.matches.last().unwrap())
         };
         self.focus = Focus::Graph;
-        self.search_highlight = true;
+        self.search_hidden = false;
         self.select(target);
-        let pos = self.matches.iter().position(|&i| i == target).unwrap() + 1;
-        self.status = format!("[{pos}/{}] '{}'", self.matches.len(), self.query);
     }
 }
 
-/// Commits whose message, author, email, hash prefix or ref names contain
-/// `query` (case-insensitive), in graph order.
-pub fn find_matches(snap: &Snapshot, query: &str) -> Vec<usize> {
-    if query.is_empty() {
-        return Vec::new();
-    }
-    let q = query.to_lowercase();
+/// What the search box restores on cancel.
+struct SearchOrigin {
+    selected: usize,
+    offset: usize,
+    focus: Focus,
+    search: Option<Matcher>,
+    matches: Vec<usize>,
+    hidden: bool,
+}
+
+/// Commits whose message, author, email, hash or ref names match the search,
+/// in graph order.
+pub fn find_matches(snap: &Snapshot, search: &Matcher) -> Vec<usize> {
     snap.commits
         .iter()
         .enumerate()
         .filter(|(_, c)| {
-            c.summary.to_lowercase().contains(&q)
-                || c.author.to_lowercase().contains(&q)
-                || c.email.to_lowercase().contains(&q)
-                || c.id.to_string().starts_with(&q)
+            search.is_match(&c.summary)
+                || search.is_match(&c.author)
+                || search.is_match(&c.email)
+                || search.is_match(&c.id.to_string())
                 || snap
                     .refs
                     .get(&c.id)
-                    .is_some_and(|ls| ls.iter().any(|l| l.name.to_lowercase().contains(&q)))
+                    .is_some_and(|ls| ls.iter().any(|l| search.is_match(&l.name)))
         })
         .map(|(i, _)| i)
         .collect()

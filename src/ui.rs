@@ -10,6 +10,7 @@ use ratatui::widgets::{
 
 use crate::app::{App, Focus, Mode, branch_matches};
 use crate::graph::Cell;
+use crate::matcher::Matcher;
 use crate::repo::{DiffKind, RefKind};
 use crate::selection::{self, Pane, PaneLayout};
 
@@ -33,6 +34,8 @@ const PALETTE: [Color; crate::graph::PALETTE_SIZE] = [
 const TAG: Color = Color::Rgb(212, 191, 110);
 const ACCENT: Color = Color::Cyan;
 const DIM: Color = Color::DarkGray;
+const YELLOW: Color = Color::Rgb(204, 178, 85);
+const RED: Color = Color::Rgb(217, 106, 106);
 
 fn color(i: usize) -> Color {
     PALETTE[i % PALETTE.len()]
@@ -80,11 +83,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     }
     match &app.mode {
         Mode::Branches { filter, selected } => draw_branches(f, app, filter, *selected),
-        Mode::Search {
-            input,
-            results,
-            selected,
-        } => draw_search(f, app, input, results, *selected),
+        Mode::Search => draw_search(f, app),
         _ => {}
     }
 }
@@ -129,7 +128,10 @@ fn panel(title: &str, focused: bool) -> Block<'_> {
 }
 
 fn draw_graph(f: &mut Frame, app: &mut App, area: Rect) {
-    let block = panel("Commits", app.focus == Focus::Graph);
+    let mut block = panel("Commits", app.focus == Focus::Graph);
+    if let Some(title) = search_title(app) {
+        block = block.title(title);
+    }
     let inner = block.inner(area);
     f.render_widget(block, area);
     app.page = inner.height.max(1) as usize;
@@ -178,8 +180,7 @@ fn draw_graph(f: &mut Frame, app: &mut App, area: Rect) {
         };
         let c = &app.snap.commits[i];
         let selected = i == app.selected;
-        let is_match =
-            app.search_highlight && !app.query.is_empty() && app.matches.binary_search(&i).is_ok();
+        let is_match = !app.search_hidden && app.matches.binary_search(&i).is_ok();
         let hash_style = if is_match {
             Style::new().fg(Color::Black).bg(Color::Yellow)
         } else {
@@ -217,8 +218,8 @@ fn draw_graph(f: &mut Frame, app: &mut App, area: Rect) {
         if room >= 12 {
             let summary = truncate(&c.summary, room);
             let pad = room - summary.chars().count();
-            let q = if is_match { app.query.as_str() } else { "" };
-            spans.extend(highlight(&summary, q, summary_style));
+            let search = app.search.as_ref().filter(|_| is_match);
+            spans.extend(highlight(&summary, search, summary_style));
             spans.push(Span::raw(" ".repeat(pad)));
             spans.push(Span::styled(meta, Style::new().fg(DIM)));
         } else {
@@ -579,9 +580,9 @@ fn draw_help(f: &mut Frame, app: &mut App, scroll: u16) {
         ("m", "merged parent (repeat to cycle octopus)"),
         ("b", "branch, tag & stash picker (type to filter)"),
         ("Search", ""),
-        ("/", "search popup: message, author, hash, refs"),
-        ("n / N", "next / previous match"),
-        ("s", "toggle search highlight"),
+        ("/", "search message, author, hash, refs (regex)"),
+        ("n / N", "next / previous match; shows hidden highlights"),
+        ("esc", "hide search highlights"),
         ("Panes", ""),
         ("← / →", "previous / next pane: graph, commit, files, diff"),
         ("Commit details", ""),
@@ -641,31 +642,26 @@ fn draw_help(f: &mut Frame, app: &mut App, scroll: u16) {
     );
 }
 
+/// Branch, tag & stash picker: the shared input box with the list below it.
 fn draw_branches(f: &mut Frame, app: &App, filter: &str, selected: usize) {
     let idx = branch_matches(&app.snap, filter);
-    let area = centered(f.area(), 60, 20);
-    f.render_widget(Clear, area);
-    let block = panel("Branches", true);
-    let inner = block.inner(area);
-    f.render_widget(block, area);
-    let [input, list_area, hint] = Layout::vertical([
-        Constraint::Length(1),
-        Constraint::Min(1),
-        Constraint::Length(1),
-    ])
-    .areas(inner);
-    f.render_widget(
-        popup_hint(&[("↑/↓", "select"), ("enter", "jump"), ("esc", "cancel")]),
-        hint,
+    let info = Span::styled(format!("{}/{}", idx.len(), app.snap.branches.len()), Style::new().fg(DIM));
+    let input = draw_input(
+        f,
+        "Branches",
+        "\u{e725}",
+        filter,
+        filter.len(),
+        Some(info),
+        &[("↑/↓", "select"), ("enter", "jump"), ("esc", "cancel")],
     );
-    f.render_widget(
-        Line::from(vec![
-            Span::styled(" filter: ", Style::new().fg(DIM)),
-            Span::raw(filter.to_string()),
-            Span::styled("█", Style::new().fg(ACCENT)),
-        ]),
-        input,
-    );
+    let Some(input) = input else { return };
+    let full = f.area();
+    let height = (idx.len() as u16 + 2).clamp(3, 16).min(full.bottom().saturating_sub(input.bottom()));
+    if height < 3 {
+        return;
+    }
+    let area = Rect { y: input.bottom(), height, ..input };
     let items: Vec<ListItem> = idx
         .iter()
         .map(|&i| {
@@ -691,127 +687,140 @@ fn draw_branches(f: &mut Frame, app: &App, filter: &str, selected: usize) {
         })
         .collect();
     let list = List::new(items)
+        .block(
+            Block::new()
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(Style::new().fg(DIM)),
+        )
         .highlight_style(Style::new().bg(Color::Rgb(45, 55, 75)))
         .highlight_symbol("▶ ");
     let mut state =
         ListState::default().with_selected(if idx.is_empty() { None } else { Some(selected) });
-    f.render_stateful_widget(list, list_area, &mut state);
-}
-
-fn popup_hint(keys: &[(&str, &str)]) -> Line<'static> {
-    let mut spans = vec![Span::raw(" ")];
-    for (k, v) in keys {
-        spans.push(Span::styled(k.to_string(), Style::new().fg(ACCENT)));
-        spans.push(Span::styled(format!(" {v}  "), Style::new().fg(DIM)));
-    }
-    Line::from(spans)
-}
-
-/// Search popup: query input and the live list of matching commits.
-fn draw_search(f: &mut Frame, app: &App, input: &str, results: &[usize], selected: usize) {
-    let full = f.area();
-    let width = (full.width * 4 / 5).clamp(40, 110);
-    let height = (full.height * 3 / 4).max(8);
-    let area = centered(full, width, height);
     f.render_widget(Clear, area);
-    let title = match (input.is_empty(), results.len()) {
-        (true, _) => "Search".to_string(),
-        (false, 1) => "Search — 1 match".to_string(),
-        (false, n) => format!("Search — {n} matches"),
-    };
-    let block = panel(&title, true);
-    let inner = block.inner(area);
-    f.render_widget(block, area);
-    let [input_area, list_area, hint] = Layout::vertical([
-        Constraint::Length(1),
-        Constraint::Min(1),
-        Constraint::Length(1),
-    ])
-    .areas(inner);
-    f.render_widget(
-        Line::from(vec![
-            Span::styled(" / ", Style::new().fg(ACCENT)),
-            Span::raw(input.to_string()),
-            Span::styled("█", Style::new().fg(ACCENT)),
-            Span::styled("   message, author, hash or ref", Style::new().fg(DIM)),
-        ]),
-        input_area,
-    );
-    f.render_widget(
-        popup_hint(&[
-            ("↑/↓", "select"),
-            ("enter", "jump"),
-            ("ctrl-u", "clear"),
-            ("esc", "cancel"),
-        ]),
-        hint,
-    );
-
-    let now = chrono::Utc::now().timestamp();
-    let text_w = list_area.width.saturating_sub(2) as usize;
-    let items: Vec<ListItem> = results
-        .iter()
-        .map(|&i| {
-            let c = &app.snap.commits[i];
-            let mut spans = vec![
-                Span::styled(c.short.clone(), Style::new().fg(Color::Yellow)),
-                Span::raw(" "),
-            ];
-            if let Some(labels) = app.snap.refs.get(&c.id) {
-                for l in labels {
-                    let (t, s) =
-                        ref_style(&l.name, l.kind, app.snap.label_color(l).unwrap_or(c.color));
-                    spans.push(Span::styled(t, s));
-                    spans.push(Span::raw(" "));
-                }
-            }
-            let meta = format!("  {} · {}", truncate(&c.author, 16), relative(now - c.time));
-            let used: usize = spans.iter().map(|s| s.width()).sum();
-            let room = text_w.saturating_sub(used + meta.chars().count());
-            let summary = truncate(&c.summary, room);
-            let pad = room.saturating_sub(summary.chars().count());
-            spans.extend(highlight(&summary, input, Style::new()));
-            spans.push(Span::raw(" ".repeat(pad)));
-            spans.push(Span::styled(meta, Style::new().fg(DIM)));
-            ListItem::new(Line::from(spans))
-        })
-        .collect();
-    if items.is_empty() && !input.is_empty() {
-        f.render_widget(
-            Line::styled("  no matching commits", Style::new().fg(DIM)),
-            list_area,
-        );
-        return;
-    }
-    let list = List::new(items)
-        .highlight_style(Style::new().bg(Color::Rgb(45, 55, 75)))
-        .highlight_symbol("▶ ");
-    let mut state = ListState::default().with_selected((!results.is_empty()).then_some(selected));
-    f.render_stateful_widget(list, list_area, &mut state);
+    f.render_stateful_widget(list, area, &mut state);
 }
 
-/// Split `text` into spans, emphasizing case-insensitive matches of `query`.
-fn highlight(text: &str, query: &str, base: Style) -> Vec<Span<'static>> {
-    let lower = text.to_lowercase();
-    let q = query.to_lowercase();
-    // Byte offsets only line up when lowercasing keeps lengths (e.g. ASCII).
-    if q.is_empty() || lower.len() != text.len() {
-        return vec![Span::styled(text.to_string(), base)];
+/// The search box, the same as in track and monitor.
+fn draw_search(f: &mut Frame, app: &App) {
+    let info = (!app.editor.text().is_empty()).then(|| match app.matches.len() {
+        0 => Span::styled("no match", Style::new().fg(RED)),
+        1 => Span::styled("1 match", Style::new().fg(DIM)),
+        n => Span::styled(format!("{n} matches"), Style::new().fg(DIM)),
+    });
+    draw_input(
+        f,
+        "Search",
+        "\u{f002}",
+        app.editor.text(),
+        app.editor.cursor(),
+        info,
+        &[("enter", "search"), ("↑/↓", "history"), ("esc", "cancel")],
+    );
+}
+
+/// The search and the current match for the Commits title; dimmed while the
+/// highlights are hidden.
+fn search_title(app: &App) -> Option<Line<'static>> {
+    let search = app.search.as_ref().filter(|_| !matches!(app.mode, Mode::Search))?;
+    let count = match (app.match_position(), app.matches.len()) {
+        _ if app.search_hidden => "hidden".to_string(),
+        (_, 0) => "no match".to_string(),
+        (Some(i), n) => format!("{}/{n}", i + 1),
+        (None, 1) => "1 match".to_string(),
+        (None, n) => format!("{n} matches"),
+    };
+    let style = if app.search_hidden { DIM } else { YELLOW };
+    Some(
+        Line::from(vec![
+            Span::styled(format!(" /{}", search.label()), Style::new().fg(style)),
+            Span::styled(format!("  {count} "), Style::new().fg(DIM)),
+        ])
+        .right_aligned(),
+    )
+}
+
+/// A one-line input box: rounded border, centered title, icon, block cursor,
+/// optional info on the right and key hints in the bottom border.
+fn draw_input(
+    f: &mut Frame,
+    title: &str,
+    icon: &str,
+    text: &str,
+    cursor: usize,
+    info: Option<Span<'static>>,
+    hints: &[(&str, &str)],
+) -> Option<Rect> {
+    let full = f.area();
+    let width = full.width.saturating_sub(4).min(60);
+    if width < 10 || full.height < 3 {
+        return None;
     }
+    let area = Rect {
+        x: full.x + (full.width - width) / 2,
+        y: full.y + 2.min(full.height - 3),
+        width,
+        height: 3,
+    };
+    let mut hint_spans = vec![Span::raw(" ")];
+    for (i, (k, v)) in hints.iter().enumerate() {
+        if i > 0 {
+            hint_spans.push(Span::styled(" · ", Style::new().fg(DIM)));
+        }
+        hint_spans.push(Span::styled(k.to_string(), Style::new().fg(ACCENT)));
+        hint_spans.push(Span::styled(format!(" {v}"), Style::new().fg(DIM)));
+    }
+    hint_spans.push(Span::raw(" "));
+    let block = Block::new()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(ACCENT))
+        .title(Line::styled(format!(" {title} "), Style::new().fg(ACCENT)).centered())
+        .title_bottom(Line::from(hint_spans).centered());
+    let inner = block.inner(area);
+    f.render_widget(Clear, area);
+    f.render_widget(block, area);
+
+    let info_width = info.as_ref().map_or(0, |s| s.width() as u16 + 1);
+    let [input, info_area] =
+        Layout::horizontal([Constraint::Min(1), Constraint::Length(info_width)]).areas(inner);
+    // Keep the cursor in view: drop characters from the start of long input
+    let room = (input.width as usize).saturating_sub(4);
+    let (mut before, after) = text.split_at(cursor);
+    while Line::raw(before).width() > room {
+        let mut chars = before.chars();
+        chars.next();
+        before = chars.as_str();
+    }
+    let mut after_chars = after.chars();
+    let spans = vec![
+        Span::styled(format!(" {icon} "), Style::new().fg(ACCENT)),
+        Span::raw(before.to_string()),
+        match after_chars.next() {
+            Some(c) => Span::styled(c.to_string(), Style::new().reversed()),
+            None => Span::styled("█", Style::new().fg(ACCENT)),
+        },
+        Span::raw(after_chars.as_str().to_string()),
+    ];
+    f.render_widget(Line::from(spans), input);
+    if let Some(info) = info {
+        f.render_widget(Line::from(info).right_aligned(), info_area);
+    }
+    Some(area)
+}
+
+/// Split `text` into spans, emphasizing the matches of `search`.
+fn highlight(text: &str, search: Option<&Matcher>, base: Style) -> Vec<Span<'static>> {
+    let Some(search) = search else { return vec![Span::styled(text.to_string(), base)] };
     let mut spans = Vec::new();
     let mut pos = 0;
-    while let Some(found) = lower[pos..].find(&q) {
-        let start = pos + found;
-        let end = start + q.len();
-        if !text.is_char_boundary(start) || !text.is_char_boundary(end) {
-            break;
-        }
-        spans.push(Span::styled(text[pos..start].to_string(), base));
+    for r in search.find_ranges(text) {
+        spans.push(Span::styled(text[pos..r.start].to_string(), base));
         spans.push(Span::styled(
-            text[start..end].to_string(),
+            text[r.clone()].to_string(),
             Style::new().fg(Color::Black).bg(Color::Yellow),
         ));
-        pos = end;
+        pos = r.end;
     }
     spans.push(Span::styled(text[pos..].to_string(), base));
     spans
