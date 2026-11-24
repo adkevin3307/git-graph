@@ -53,7 +53,7 @@ graph that you can browse, search and diff from the keyboard.
 - **Diffs in place of the graph** with the commit details and file list still
   visible; maximize with `z`, scroll sideways with `h`/`l`, `tab` through
   files.
-- **Search** across message, author, email, hash and branch/tag names in a
+- **Search** across the whole message (subject and body), author, email, hash and branch/tag names in a
   small input box: regex with smart case, matches highlighted and the first
   one selected while you type, `n`/`N` to step through them and `esc` to
   hide the highlights. See [Shared search](#shared-search).
@@ -63,7 +63,9 @@ graph that you can browse, search and diff from the keyboard.
 - **Walk the history**: first parent, merged parent (repeat `m` to cycle the
   parents of an octopus merge), child, HEAD.
 - **Safe checkout** of the branch at a commit (or a detached HEAD), with
-  confirmation; refuses to overwrite local changes.
+  confirmation; refuses to overwrite local changes or to check out a branch
+  that another worktree has checked out, and checks everything before any
+  file is touched.
 - **Copy a commit hash** to the clipboard via the OSC 52 terminal escape
   (works over SSH in most modern terminals).
 - **Mouse support**: scroll, click commits, files and panes, and drag to
@@ -122,7 +124,7 @@ git-graph [OPTIONS] [PATH]
 | `-m, --main <BRANCH>` | Trunk branch: leftmost column and color 0 (default: first of `main`, `master`, `trunk`, `develop`, `origin/main`, `origin/master`) |
 | `--no-compact` | Give every branch connector its own row instead of sharing free commit rows (like git-igitt's `--sparse`) |
 | `--no-stash` | Don't show stash entries |
-| `--no-mouse` | Disable mouse support, so plain drag uses the terminal's own text selection |
+| `--no-mouse` | Don't capture the mouse: drag uses the terminal's own selection, and the wheel scrolls only where the terminal supports alternate scroll mode |
 | `--print` | Print the graph to stdout instead of starting the TUI |
 
 ## Layout
@@ -162,19 +164,19 @@ diff follows the file), and scroll the commit details and the diff.
 | `j`/`k`, `↓`/`↑` | Down / up |
 | `ctrl-d`/`ctrl-u` | Half page down / up |
 | `PgDn`/`PgUp`, `ctrl-f`/`ctrl-b` | Page down / up |
-| `g` / `G` | Top / bottom |
+| `g`/`G` | Top / bottom |
 | `h`/`l` | Left / right 4 columns (diff) |
 | `H`/`L` | Left / right half a page (diff) |
-| `home` / `end` | Line start / end (diff) |
-| `←` / `→` | Previous / next pane: commits, commit, files, diff |
+| `home`/`end` | Line start / end (diff) |
+| `←`/`→` | Previous / next pane: commits, commit, files, diff |
 | `enter` | Open: the files, then a file's diff |
 
 **Search**
 
 | Key | Action |
 |---|---|
-| `/` | Search (regex, smart case; message, author, email, hash, refs) |
-| `n` / `N` | Next / previous match |
+| `/` | Search (regex, smart case; whole message, author, email, hash, refs) |
+| `n`/`N` | Next / previous match |
 | `esc` | Hide search highlights, then back to the commits |
 
 **Commits**
@@ -182,7 +184,7 @@ diff follows the file), and scroll the commit details and the diff.
 | Key | Action |
 |---|---|
 | `H` | Jump to HEAD |
-| `p` / `c` | First parent / child |
+| `p`/`c` | First parent / child |
 | `m` | Merged parent (repeat to cycle through every parent of an octopus merge) |
 | `b` | Branch, tag & stash picker (type to filter, `enter` to jump) |
 | `D` | Diff of the whole commit |
@@ -234,18 +236,18 @@ keys do the same thing in all three:
 | `j`/`k`, `↓`/`↑` | Down / up |
 | `ctrl-d`/`ctrl-u` | Half page down / up |
 | `PgDn`/`PgUp`, `ctrl-f`/`ctrl-b` | Page down / up |
-| `g` / `G` | Top / bottom |
+| `g`/`G` | Top / bottom |
 | `h`/`l` | Left / right 4 columns |
 | `H`/`L` | Left / right half a page |
-| `home` / `end` | Line start / end (not top / bottom) |
-| `/`, `n` / `N` | Search (regex, smart case), next / previous match |
+| `home`/`end` | Line start / end (not top / bottom) |
+| `/`, `n`/`N` | Search (regex, smart case), next / previous match |
 | `esc` | Hide search highlights, then go back |
 | `w` | Toggle wrap (track, monitor) |
 | `r` | Refresh: redraw the screen, and run the command again (monitor) or reload the repository (git-graph) |
 | `?` | Help, in the same window everywhere (`j`/`k` or the wheel scroll it; any other key closes it) |
 | `q`, `ctrl-c` | Quit (in an input box, `ctrl-c` cancels it like `esc`) |
 | mouse wheel | Scroll (`ctrl` + wheel: faster) |
-| mouse drag | Select text and copy it with OSC 52 on release |
+| mouse drag | Select text and copy it with OSC 52 on release (up to 512 KB) |
 | shift + drag | The terminal's own selection |
 
 Other keys are specific to one tool, and no key just repeats another one.
@@ -264,19 +266,25 @@ HEAD.
 ```
 
 - Patterns are regular expressions with smart case (case-insensitive unless
-  the pattern has an uppercase letter); an invalid regex is matched literally.
-- While you type, matches are highlighted, the view jumps to the first match
+  the pattern has an uppercase letter; the letter of an escape such as `\W`
+  or `\S` doesn't count); an invalid regex is matched literally.
+- While you type, matches are highlighted, the view moves to the first match
   from where you started, and the box shows how many there are.
 - `enter` keeps the search; `esc` cancels it and goes back to where you were;
   an empty search clears it.
 - Editing: `←`/`→`, `home`/`end`, `ctrl-a`/`ctrl-e` move the cursor,
   `ctrl-u`/`ctrl-w` delete to the start / the previous word, `↑`/`↓` browse
   earlier searches, and `backspace` on an empty box closes it.
+- `n`/`N` move to the next / previous match. The current match's line is
+  highlighted (in `git-graph` it is the selected commit), and the view only
+  scrolls when the match is off screen, keeping 3 lines of context. Scroll
+  the current match out of view and `n`/`N` start from the screen instead.
 - The main panel's title shows the search and the current match, e.g.
   `/error  3/12`.
 - Matches are highlighted in black on yellow. `esc` hides the highlights but
-  keeps the search (the title then says `hidden`), like vim's `:noh`; `n` / `N`
+  keeps the search (the title then says `hidden`), like vim's `:noh`; `n`/`N`
   show them again and jump to the next / previous match.
+
 ### Shared screen layout
 
 All three draw the same frame:
@@ -290,8 +298,10 @@ All three draw the same frame:
  j/k down/up  g/G top/bottom  / search  n/N next/prev  tool keys…  esc back  ? help  q quit
 ```
 
-- The header starts with the tool's name on a cyan badge; flags appear only
-  while they are on (e.g. `wrap`, `diff · bell · wrap`).
+- The header starts with the tool's name on a cyan badge, then what it shows
+  (cut short with `…` when space runs out), its state, and the flags that
+  are on (e.g. `wrap`, `diff · bell · wrap`). The tool-specific info on the
+  right appears when everything fits.
 - Panels have rounded borders; the focused one is cyan.
 - A panel whose content doesn't fit has a scrollbar on its right border, in
   the border's color (cyan when the panel is focused). Nothing is drawn over
@@ -300,8 +310,14 @@ All three draw the same frame:
   tool's most used keys (`?` lists them all), `esc` back where it applies,
   then `? help` and `q quit`.
   Keys are cyan and their descriptions gray; on a narrow terminal the tool's
-  own keys are dropped first, so help and quit always stay visible. A status
-  message (yellow) replaces the hints until the next key.
+  own keys are dropped first, then `? help`, and a hint is never cut in
+  half. A status message (yellow) replaces the hints until the next key.
+- The mouse is captured, so the wheel scrolls and a drag selects text.
+  `--no-mouse` leaves it to the terminal and asks for alternate scroll mode,
+  so the wheel still scrolls where the terminal supports it.
+- However the tool ends (`q`, `ctrl-c`, a termination signal from outside
+  such as `kill` or closing the terminal or tmux pane, or a crash), the
+  terminal is restored: normal screen, cursor, keyboard and mouse.
 
 ## Copying text
 
@@ -383,7 +399,9 @@ cargo test     # graph layout, merge-message parsing, selection, search and edit
 | `src/selection.rs` | Mouse text selection and copying |
 | `src/input.rs` | Search box line editor and history (shared) |
 | `src/matcher.rs` | Smart-case regex search patterns (shared) |
-| `src/main.rs` | Command-line options, terminal setup, `--print` |
+| `src/main.rs` | Command-line options, the event loop, `--print` |
+| `src/terminal.rs` | Entering and restoring the terminal, panics, OSC 52 copying (shared) |
+| `src/signals.rs` | Quitting cleanly on termination signals (shared) |
 
 `git-graph --print` is handy for checking layout changes: it prints the same
 graph the TUI shows, including connector rows.
