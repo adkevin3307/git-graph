@@ -5,7 +5,8 @@ use ratatui::layout::{Constraint, Layout, Margin, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
-    Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap,
+    Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph, Scrollbar,
+    ScrollbarOrientation, ScrollbarState, Wrap,
 };
 
 use crate::app::{App, Focus, Mode, branch_matches};
@@ -237,6 +238,8 @@ fn draw_graph(f: &mut Frame, app: &mut App, area: Rect) {
         lines.push(line);
     }
     f.render_widget(Paragraph::new(lines), inner);
+    let rows = app.snap.rows.len();
+    draw_scroll(f, area, app.offset, app.page, rows, app.offset + 1, end);
     app.panes.push(PaneLayout {
         pane: Pane::Graph,
         area: inner,
@@ -432,9 +435,21 @@ fn draw_files(f: &mut Frame, app: &mut App, area: Rect, focused: bool) {
     let mut state = ListState::default()
         .with_selected(selected)
         .with_offset(app.files_offset);
+    let files = d.files.len();
     f.render_stateful_widget(list, area, &mut state);
     app.files_offset = state.offset();
     app.files_area = area;
+    let visible = area.height.saturating_sub(2) as usize;
+    let last = (app.files_offset + visible).min(files);
+    draw_scroll(
+        f,
+        area,
+        app.files_offset,
+        visible,
+        files,
+        app.files_offset + 1,
+        last,
+    );
     app.panes.push(PaneLayout {
         pane: Pane::Files,
         area: area.inner(Margin::new(1, 1)),
@@ -480,9 +495,12 @@ fn draw_diff(f: &mut Frame, app: &mut App, area: Rect) {
             Line::styled(l.text.clone(), st)
         })
         .collect();
-    let (row_offset, col_offset) = (d.scroll, d.hscroll);
+    let (row_offset, col_offset, total) = (d.scroll, d.hscroll, d.lines.len());
     let hscroll = u16::try_from(col_offset).unwrap_or(u16::MAX);
     f.render_widget(Paragraph::new(lines).scroll((0, hscroll)), inner);
+    let height = inner.height as usize;
+    let last = (row_offset + height).min(total);
+    draw_scroll(f, area, row_offset, height, total, row_offset + 1, last);
     app.panes.push(PaneLayout {
         pane: Pane::Diff,
         area: inner,
@@ -501,6 +519,8 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
             Line::styled(format!(" {}", app.status), Style::new().fg(YELLOW))
         }
         _ => {
+            // Same order as track and monitor: movement, search, this pane's own
+            // keys, back, then help and quit.
             let keys: &[(&str, &str)] = if app.diff.is_some() && app.focus == Focus::Diff {
                 &[
                     ("j/k", "scroll"),
@@ -518,10 +538,13 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
                     ("←/→", "panes"),
                     ("esc", "back"),
                     ("?", "help"),
+                    ("q", "quit"),
                 ]
             } else if app.focus == Focus::Commit {
                 &[
                     ("j/k", "scroll"),
+                    ("/", "search"),
+                    ("n/N", "next/prev"),
                     ("←/→", "panes"),
                     ("esc", "back"),
                     ("?", "help"),
@@ -529,18 +552,20 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
                 ]
             } else if app.diff.is_some() {
                 &[
-                    ("j/k tab", "switch file"),
+                    ("j/k", "switch file"),
                     ("enter/l", "focus diff"),
                     ("←/→", "panes"),
                     ("esc", "back"),
                     ("?", "help"),
+                    ("q", "quit"),
                 ]
             } else {
                 &[
                     ("j/k", "move"),
+                    ("/", "search"),
+                    ("n/N", "next/prev"),
                     ("←/→", "panes"),
                     ("enter", "open"),
-                    ("/", "search"),
                     ("b", "branches"),
                     ("p/m/c", "parent/merge/child"),
                     ("o", "checkout"),
@@ -548,12 +573,7 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
                     ("q", "quit"),
                 ]
             };
-            let mut spans = vec![Span::raw(" ")];
-            for (k, v) in keys {
-                spans.push(Span::styled(*k, Style::new().fg(ACCENT)));
-                spans.push(Span::styled(format!(" {v}  "), Style::new().fg(DIM)));
-            }
-            Line::from(spans)
+            footer_hints(keys, area.width)
         }
     };
     f.render_widget(line, area);
@@ -643,6 +663,69 @@ fn draw_help(f: &mut Frame, app: &mut App, scroll: u16) {
             .scroll((scroll.min(max), 0))
             .block(panel(title, true)),
         area,
+    );
+}
+
+/// Footer key hints, the same in track, monitor and git-graph: movement, search,
+/// the tool's own keys, then `? help` and `q quit` last. When the line is too
+/// narrow, the tool's own keys are dropped from the end first, so help and quit
+/// always stay visible.
+fn footer_hints(keys: &[(&str, &str)], width: u16) -> Line<'static> {
+    let hint_width = |(k, v): &(&str, &str)| Line::raw(*k).width() + Line::raw(*v).width() + 3;
+    let mut keys = keys.to_vec();
+    while keys.len() > 2 && 1 + keys.iter().map(hint_width).sum::<usize>() > width as usize {
+        keys.remove(keys.len() - 3);
+    }
+    let mut spans = vec![Span::raw(" ")];
+    for (k, v) in keys {
+        spans.push(Span::styled(k.to_string(), Style::new().fg(ACCENT)));
+        spans.push(Span::styled(format!(" {v}  "), Style::new().fg(DIM)));
+    }
+    Line::from(spans)
+}
+
+/// A scrollbar on the right border of a panel and the visible range (`first`-`last`
+/// of `total`, 1-based) on its bottom border, the same in track, monitor and
+/// git-graph. Nothing is drawn when everything fits.
+fn draw_scroll(
+    f: &mut Frame,
+    panel: Rect,
+    offset: usize,
+    visible: usize,
+    total: usize,
+    first: usize,
+    last: usize,
+) {
+    if total <= visible || panel.height < 3 {
+        return;
+    }
+    let mut state = ScrollbarState::new(total - visible)
+        .position(offset)
+        .viewport_content_length(visible);
+    f.render_stateful_widget(
+        Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .begin_symbol(None)
+            .end_symbol(None)
+            .thumb_style(Style::new().fg(ACCENT))
+            .track_style(Style::new().fg(DIM)),
+        panel.inner(Margin {
+            vertical: 1,
+            horizontal: 0,
+        }),
+        &mut state,
+    );
+    let range = Line::styled(format!(" {first}-{last}/{total} "), Style::new().fg(DIM));
+    let bottom = Rect {
+        y: panel.bottom() - 1,
+        height: 1,
+        ..panel
+    };
+    f.render_widget(
+        range.right_aligned(),
+        bottom.inner(Margin {
+            vertical: 0,
+            horizontal: 1,
+        }),
     );
 }
 

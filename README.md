@@ -140,6 +140,9 @@ git-graph [OPTIONS] [PATH]
 ```
 
 On terminals narrower than 120 columns the side panes move below the graph.
+The commit list, the file list and the diff show a scrollbar on their right
+border and the visible range on their bottom border when they don't fit, as
+in track and monitor.
 The focused pane has a highlighted border; `←`/`→` move focus through
 **graph → commit → files → diff**, as in git-igitt.
 
@@ -262,6 +265,29 @@ they move between panes and jump to HEAD).
 - Matches are highlighted in black on yellow. `esc` hides the highlights but
   keeps the search (the title then says `hidden`), like vim's `:noh`; `n` / `N`
   show them again and jump to the next / previous match.
+### Shared screen layout
+
+All three draw the same frame:
+
+```
+ tool  what it shows  state · flags that are on              tool-specific info
+╭ Panel  details ─────────────────────────────────────── /search  current/total ╮
+│ content                                                                       █
+│                                                                               ║
+╰──────────────────────────────────────────────────────────────────── 1-24/812 ╯
+ j/k move  / search  n/N next/prev  tool keys…  esc back  ? help  q quit
+```
+
+- The header starts with the tool's name on a cyan badge; flags appear only
+  while they are on (e.g. `wrap`, `diff · bell · wrap`).
+- Panels have rounded borders; the focused one is cyan.
+- A panel whose content doesn't fit has a scrollbar on its right border (cyan
+  thumb on a gray track) and the visible range on its bottom border.
+- The footer lists keys in the same order everywhere: movement, search, the
+  tool's own keys, `esc` back where it applies, then `? help` and `q quit`.
+  Keys are cyan and their descriptions gray; on a narrow terminal the tool's
+  own keys are dropped first, so help and quit always stay visible. A status
+  message (yellow) replaces the hints until the next key.
 
 ## Copying text
 
