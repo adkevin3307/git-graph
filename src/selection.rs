@@ -44,7 +44,10 @@ impl PaneLayout {
         let a = self.area;
         let x = x.clamp(a.x, a.right().saturating_sub(1));
         let y = y.clamp(a.y, a.bottom().saturating_sub(1));
-        (self.row_offset + (y - a.y) as usize, self.col_offset + (x - a.x) as usize)
+        (
+            self.row_offset + (y - a.y) as usize,
+            self.col_offset + (x - a.x) as usize,
+        )
     }
 }
 
@@ -63,7 +66,14 @@ pub struct Selection {
 
 impl Selection {
     pub fn new(pane: Pane, at: (usize, usize)) -> Self {
-        Self { pane, anchor: at, cursor: at, dragged: false, pending: None, rows: BTreeMap::new() }
+        Self {
+            pane,
+            anchor: at,
+            cursor: at,
+            dragged: false,
+            pending: None,
+            rows: BTreeMap::new(),
+        }
     }
 
     /// Start and end in reading order; both ends are inclusive.
@@ -85,7 +95,11 @@ impl Selection {
             return None;
         }
         let from = if row == start.0 { start.1 } else { 0 };
-        let to = if row == end.0 { end.1.saturating_add(1) } else { usize::MAX };
+        let to = if row == end.0 {
+            end.1.saturating_add(1)
+        } else {
+            usize::MAX
+        };
         Some((from, to))
     }
 
@@ -94,7 +108,9 @@ impl Selection {
         let (start, end) = self.range();
         let mut lines = Vec::new();
         for row in start.0..=end.0 {
-            let Some((from, to)) = self.columns(row) else { continue };
+            let Some((from, to)) = self.columns(row) else {
+                continue;
+            };
             let Some(text) = row_text(row) else { continue };
             lines.push(slice_columns(&text, from, to).trim_end().to_string());
         }
@@ -147,7 +163,9 @@ pub fn highlight(
     let a = layout.area;
     for y in a.y..a.bottom() {
         let row = layout.row_offset + (y - a.y) as usize;
-        let Some((from, to)) = sel.columns(row) else { continue };
+        let Some((from, to)) = sel.columns(row) else {
+            continue;
+        };
         let text_end = row_text(row).map_or(0, |t| t.trim_end().chars().map(char_width).sum());
         let to = to.min(text_end.max(from + 1));
         for x in a.x..a.right() {
@@ -193,12 +211,19 @@ mod tests {
         buf.set_string(0, 0, "日本 ok", ratatui::style::Style::new());
         buf.set_string(0, 1, "abc", ratatui::style::Style::new());
         assert_eq!(screen_row(&buf, area, 0), "日本 ok ");
-        let layout = PaneLayout { pane: Pane::Files, area, row_offset: 0, col_offset: 0 };
+        let layout = PaneLayout {
+            pane: Pane::Files,
+            area,
+            row_offset: 0,
+            col_offset: 0,
+        };
         let mut sel = Selection::new(Pane::Files, (0, 5));
         sel.cursor = (1, 7);
         sel.dragged = true;
         let rows = ["日本 ok", "abc"];
-        highlight(&mut buf, &layout, &sel, |r| rows.get(r).map(|s| s.to_string()));
+        highlight(&mut buf, &layout, &sel, |r| {
+            rows.get(r).map(|s| s.to_string())
+        });
         // Row 0 from column 5 to its text end (7); row 1 only up to "abc".
         let bg = |x, y| buf[(x, y)].bg == SELECTION_BG;
         assert!(!bg(4, 0) && bg(5, 0) && bg(6, 0) && !bg(7, 0));

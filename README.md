@@ -329,8 +329,9 @@ rows, merges and forks are drawn the same way.
 ## Development
 
 ```sh
-cargo test     # graph layout and merge-message parsing tests
-cargo clippy
+cargo fmt
+cargo clippy --all-targets
+cargo test     # graph layout, merge-message parsing, selection, search and editor tests
 ```
 
 | File | Contents |
@@ -340,7 +341,22 @@ cargo clippy
 | `src/app.rs` | Application state and key/mouse handling |
 | `src/ui.rs` | Rendering with ratatui |
 | `src/selection.rs` | Mouse text selection and copying |
+| `src/input.rs` | Search box line editor and history (shared) |
+| `src/matcher.rs` | Smart-case regex search patterns (shared) |
 | `src/main.rs` | Command-line options, terminal setup, `--print` |
 
 `git-graph --print` is handy for checking layout changes: it prints the same
 graph the TUI shows, including connector rows.
+
+### Code style
+
+track, monitor and git-graph share one code style, so a change can be
+carried between them:
+
+- `rustfmt.toml` is the same in all three; run `cargo fmt` before committing.
+- `cargo clippy --all-targets` must report nothing, and `cargo test` must pass.
+- `src/input.rs` (line editor and history) and `src/matcher.rs` (smart-case
+  regex search) are identical copies; change them in all three together.
+- The same `[profile.release]` (LTO, one codegen unit, stripped) and
+  `rust-version = "1.88"`; dependencies are listed alphabetically, with the
+  same versions where they overlap.

@@ -234,7 +234,11 @@ impl App {
             return;
         }
         // ctrl + wheel scrolls faster, as in track and monitor.
-        let lines = if ev.modifiers.contains(KeyModifiers::CONTROL) { 15 } else { 3 };
+        let lines = if ev.modifiers.contains(KeyModifiers::CONTROL) {
+            15
+        } else {
+            3
+        };
         let (x, y) = (ev.column, ev.row);
         match ev.kind {
             // Pressing starts a selection; the click below still does its usual thing.
@@ -352,7 +356,9 @@ impl App {
     /// Copies the selected text to the clipboard.
     fn finish_selection(&mut self) {
         self.resolve_drag();
-        let Some(sel) = self.selection.take() else { return };
+        let Some(sel) = self.selection.take() else {
+            return;
+        };
         if !sel.dragged {
             return;
         }
@@ -362,7 +368,10 @@ impl App {
         }
         copy_to_clipboard(&text);
         let n = text.chars().count();
-        self.status = format!("Copied {n} character{} to the clipboard", if n == 1 { "" } else { "s" });
+        self.status = format!(
+            "Copied {n} character{} to the clipboard",
+            if n == 1 { "" } else { "s" }
+        );
     }
 
     fn scroll(&mut self, delta: isize) {
@@ -945,7 +954,12 @@ impl App {
         self.search_hidden = false;
         self.recompute_matches();
         let from = self.selected;
-        if let Some(&target) = self.matches.iter().find(|&&i| i >= from).or(self.matches.first()) {
+        if let Some(&target) = self
+            .matches
+            .iter()
+            .find(|&&i| i >= from)
+            .or(self.matches.first())
+        {
             self.focus = Focus::Graph;
             self.select(target);
         }
@@ -985,7 +999,10 @@ impl App {
         }
         let cur = self.selected;
         let found = if forward {
-            self.matches.iter().copied().find(|&i| if inclusive { i >= cur } else { i > cur })
+            self.matches
+                .iter()
+                .copied()
+                .find(|&i| if inclusive { i >= cur } else { i > cur })
         } else {
             self.matches.iter().rev().copied().find(|&i| i < cur)
         };

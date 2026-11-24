@@ -248,7 +248,9 @@ fn draw_graph(f: &mut Frame, app: &mut App, area: Rect) {
 /// Records the selected pane's rows and highlights the selection.
 fn draw_selection(buf: &mut Buffer, app: &mut App) {
     app.resolve_drag();
-    let Some(mut sel) = app.selection.take() else { return };
+    let Some(mut sel) = app.selection.take() else {
+        return;
+    };
     if let Some(layout) = app.panes.iter().find(|p| p.pane == sel.pane).copied() {
         if sel.pane != Pane::Diff {
             let a = layout.area;
@@ -647,7 +649,10 @@ fn draw_help(f: &mut Frame, app: &mut App, scroll: u16) {
 /// Branch, tag & stash picker: the shared input box with the list below it.
 fn draw_branches(f: &mut Frame, app: &App, filter: &str, selected: usize) {
     let idx = branch_matches(&app.snap, filter);
-    let info = Span::styled(format!("{}/{}", idx.len(), app.snap.branches.len()), Style::new().fg(DIM));
+    let info = Span::styled(
+        format!("{}/{}", idx.len(), app.snap.branches.len()),
+        Style::new().fg(DIM),
+    );
     let input = draw_input(
         f,
         "Branches",
@@ -659,11 +664,17 @@ fn draw_branches(f: &mut Frame, app: &App, filter: &str, selected: usize) {
     );
     let Some(input) = input else { return };
     let full = f.area();
-    let height = (idx.len() as u16 + 2).clamp(3, 16).min(full.bottom().saturating_sub(input.bottom()));
+    let height = (idx.len() as u16 + 2)
+        .clamp(3, 16)
+        .min(full.bottom().saturating_sub(input.bottom()));
     if height < 3 {
         return;
     }
-    let area = Rect { y: input.bottom(), height, ..input };
+    let area = Rect {
+        y: input.bottom(),
+        height,
+        ..input
+    };
     let items: Vec<ListItem> = idx
         .iter()
         .map(|&i| {
@@ -724,7 +735,10 @@ fn draw_search(f: &mut Frame, app: &App) {
 /// The search and the current match for the Commits title; dimmed while the
 /// highlights are hidden.
 fn search_title(app: &App) -> Option<Line<'static>> {
-    let search = app.search.as_ref().filter(|_| !matches!(app.mode, Mode::Search))?;
+    let search = app
+        .search
+        .as_ref()
+        .filter(|_| !matches!(app.mode, Mode::Search))?;
     let count = match (app.match_position(), app.matches.len()) {
         _ if app.search_hidden => "hidden".to_string(),
         (_, 0) => "no match".to_string(),
@@ -813,7 +827,9 @@ fn draw_input(
 
 /// Split `text` into spans, emphasizing the matches of `search`.
 fn highlight(text: &str, search: Option<&Matcher>, base: Style) -> Vec<Span<'static>> {
-    let Some(search) = search else { return vec![Span::styled(text.to_string(), base)] };
+    let Some(search) = search else {
+        return vec![Span::styled(text.to_string(), base)];
+    };
     let mut spans = Vec::new();
     let mut pos = 0;
     for r in search.find_ranges(text) {
