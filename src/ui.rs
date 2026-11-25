@@ -668,7 +668,7 @@ fn draw_help(f: &mut Frame, app: &mut App, scroll: u16) {
     } else {
         "Help — any key to close"
     };
-    f.render_widget(Clear, area);
+    clear_popup(f, area);
     f.render_widget(
         Paragraph::new(lines)
             .scroll((scroll.min(max), 0))
@@ -799,7 +799,7 @@ fn draw_branches(f: &mut Frame, app: &App, selected: usize) {
         .highlight_symbol("▶ ");
     let mut state =
         ListState::default().with_selected(if idx.is_empty() { None } else { Some(selected) });
-    f.render_widget(Clear, area);
+    clear_popup(f, area);
     f.render_stateful_widget(list, area, &mut state);
 }
 
@@ -883,7 +883,7 @@ fn draw_input(
         .title(Line::styled(format!(" {title} "), Style::new().fg(ACCENT)).centered())
         .title_bottom(Line::from(hint_spans).centered());
     let inner = block.inner(area);
-    f.render_widget(Clear, area);
+    clear_popup(f, area);
     f.render_widget(block, area);
 
     let info_width = info.as_ref().map_or(0, |s| s.width() as u16 + 1);
@@ -1004,6 +1004,23 @@ fn fit(text: &str, width: usize) -> String {
     out
 }
 
+/// Clears `area` for a popup (search box, help, picker). A double-width character (CJK)
+/// half under the popup's left edge is replaced by a space: a terminal can't show half
+/// of it, and ratatui would print it whole, over the popup's left border. The same in
+/// track, monitor and git-graph.
+fn clear_popup(f: &mut Frame, area: Rect) {
+    f.render_widget(Clear, area);
+    let buf = f.buffer_mut();
+    if area.x > buf.area.x {
+        for y in area.top()..area.bottom() {
+            let cell = &mut buf[(area.x - 1, y)];
+            if cell.symbol().width() > 1 {
+                cell.set_symbol(" ");
+            }
+        }
+    }
+}
+
 fn relative(secs: i64) -> String {
     let s = secs.max(0);
     match s {
@@ -1029,5 +1046,32 @@ fn fmt_time(secs: i64, offset_min: i32) -> String {
             )
         }
         None => secs.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    #[test]
+    fn popup_over_cjk_keeps_its_left_border() {
+        let mut term = Terminal::new(TestBackend::new(12, 3)).unwrap();
+        term.draw(|f| {
+            // Double-width characters at columns 0, 2, 4, …
+            f.render_widget(Line::raw("中文中文中文"), f.area());
+            // The popup's left edge (column 3) covers the right half of 文 (2–3)
+            let area = Rect::new(3, 0, 5, 3);
+            clear_popup(f, area);
+            f.render_widget(Block::bordered(), area);
+        })
+        .unwrap();
+        // What the terminal shows: the half-covered character is gone, the border is drawn
+        let shown = term.backend().buffer();
+        assert_eq!(shown[(0, 0)].symbol(), "中");
+        assert_eq!(shown[(2, 0)].symbol(), " ");
+        assert_eq!(shown[(3, 0)].symbol(), "┌");
+        assert_eq!(shown[(3, 1)].symbol(), "│");
     }
 }
