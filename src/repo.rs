@@ -652,6 +652,79 @@ pub fn detail(repo: &Repository, id: Oid) -> Result<CommitDetail> {
     })
 }
 
+/// A diff header line with its quoted paths made readable. git (and libgit2) quote a
+/// path that has non-ASCII bytes, so `檔案.txt` shows as `"a/\346\252\224\346\241\210.txt"`;
+/// like `git -c core.quotePath=false`, such a path is shown as UTF-8 without quotes. A path
+/// that needs its quotes (a space, a quote, a control character) keeps them.
+fn unquote_paths(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut rest = line;
+    while let Some(start) = rest.find('"') {
+        out.push_str(&rest[..start]);
+        let after = &rest[start + 1..];
+        let mut bytes = Vec::new();
+        let mut chars = after.char_indices();
+        let mut end = None;
+        while let Some((i, c)) = chars.next() {
+            match c {
+                '"' => {
+                    end = Some(i);
+                    break;
+                }
+                '\\' => match chars.next() {
+                    Some((_, d @ '0'..='7')) => {
+                        let mut v = d.to_digit(8).unwrap_or(0);
+                        for _ in 0..2 {
+                            match chars.clone().next() {
+                                Some((_, o @ '0'..='7')) => {
+                                    v = v * 8 + o.to_digit(8).unwrap_or(0);
+                                    chars.next();
+                                }
+                                _ => break,
+                            }
+                        }
+                        bytes.push(v as u8);
+                    }
+                    Some((_, e)) => bytes.push(match e {
+                        'n' => b'\n',
+                        't' => b'\t',
+                        'r' => b'\r',
+                        'a' => 7,
+                        'b' => 8,
+                        'f' => 12,
+                        'v' => 11,
+                        other => other as u8,
+                    }),
+                    None => {}
+                },
+                c => {
+                    let mut buf = [0; 4];
+                    bytes.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
+                }
+            }
+        }
+        let Some(end) = end else {
+            // Not a quoted path after all
+            out.push_str(&rest[start..]);
+            return out;
+        };
+        let path = String::from_utf8_lossy(&bytes);
+        if path
+            .chars()
+            .any(|c| c.is_control() || c == '"' || c == '\\' || c == ' ')
+        {
+            out.push('"');
+            out.push_str(&after[..end]);
+            out.push('"');
+        } else {
+            out.push_str(&path);
+        }
+        rest = &after[end + 1..];
+    }
+    out.push_str(rest);
+    out
+}
+
 /// Diff of a single file (or the whole commit when `path` is None).
 pub fn file_diff(repo: &Repository, id: Oid, path: Option<&FileChange>) -> Result<Vec<DiffLine>> {
     let diff = match path {
@@ -689,7 +762,7 @@ pub fn file_diff(repo: &Repository, id: Oid, path: Option<&FileChange>) -> Resul
                 for l in content.lines() {
                     lines.push(DiffLine {
                         kind: DiffKind::Header,
-                        text: l.to_string(),
+                        text: unquote_paths(l),
                     });
                 }
                 return true;
@@ -836,6 +909,25 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&wt_dir);
+    }
+
+    #[test]
+    fn quoted_paths_become_readable() {
+        assert_eq!(
+            unquote_paths(
+                r#"diff --git "a/\346\252\224\346\241\210.txt" "b/\346\252\224\346\241\210.txt""#
+            ),
+            "diff --git a/檔案.txt b/檔案.txt"
+        );
+        assert_eq!(
+            unquote_paths(r#"--- "a/\346\252\224 x.txt""#),
+            r#"--- "a/\346\252\224 x.txt""#
+        );
+        assert_eq!(unquote_paths("+++ b/plain.txt"), "+++ b/plain.txt");
+        assert_eq!(
+            unquote_paths(r#"rename from "\344\270\255""#),
+            "rename from 中"
+        );
     }
 
     #[test]
