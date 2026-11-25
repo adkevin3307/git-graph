@@ -15,11 +15,8 @@ use std::time::Duration;
 use anyhow::Result;
 use clap::Parser;
 use clap::builder::styling::{AnsiColor, Styles};
-use ratatui::backend::CrosstermBackend;
+use ratatui::backend::Backend;
 use ratatui::crossterm::event::{self, Event, KeyEventKind};
-use ratatui::crossterm::execute;
-use ratatui::crossterm::terminal::{Clear, ClearType};
-use ratatui::{DefaultTerminal, Terminal};
 
 use signals::Signals;
 
@@ -89,7 +86,7 @@ fn main() -> Result<()> {
     terminal::on_panic(|| {});
     let guard = terminal::enter(stdout, !cli.no_mouse)?;
     let signals = Signals::catch(|| {})?;
-    let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
+    let mut terminal = terminal::tui(io::stdout())?;
     let result = run(&mut terminal, &mut app, &signals);
     drop(terminal);
     drop(guard);
@@ -131,7 +128,7 @@ fn print_graph(snap: &repo::Snapshot) -> io::Result<()> {
 
 /// Returns the signal that ended the program, if one did.
 fn run(
-    terminal: &mut DefaultTerminal,
+    terminal: &mut terminal::Tui<io::Stdout>,
     app: &mut app::App,
     signals: &Signals,
 ) -> Result<Option<i32>> {
@@ -164,8 +161,9 @@ fn run(
 /// Redraws the whole screen (r: refresh), the same in track, monitor and git-graph.
 /// Unlike `Terminal::clear`, this doesn't ask the terminal for the cursor position
 /// (`\e[6n`), so a terminal that doesn't answer can't make it fail.
-fn refresh_screen(terminal: &mut DefaultTerminal) -> std::io::Result<()> {
-    execute!(terminal.backend_mut(), Clear(ClearType::All))?;
+fn refresh_screen(terminal: &mut terminal::Tui<io::Stdout>) -> std::io::Result<()> {
+    // Through the backend, so it also forgets what the screen showed
+    Backend::clear(terminal.backend_mut())?;
     // An empty frame first, so the next frame repaints every cell.
     terminal.draw(|_| {})?;
     Ok(())
